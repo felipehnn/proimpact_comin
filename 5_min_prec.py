@@ -1,5 +1,5 @@
 """
-Simple ComIn plugin for exactring 5-minutes precipitation datasets.
+Simple ComIn plugin for extracting 5-minutes precipitation datasets.
 Actually, this plugin works for any precipitation accumulation interval
 different than that set for ICON's io_nml value of precip_interval with
 small changes, but it was created for 5min precipitation in mind.
