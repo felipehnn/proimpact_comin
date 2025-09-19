@@ -9,7 +9,7 @@ accumulation algorithm in the plugin itself.
 
 TODO: 1) Consider adding a threshold for the precipitation under which it is
          set to zero, focusing only on extreme precipitation events. Combined
-         with Zarr compression, this might save a big chunk of dis space.
+         with Zarr compression, this might save a big chunk of disk space.
 
 Author: Felipe Navarrete (GERICS-Hereon; felipe.navarrete@hereon.de)
 """
