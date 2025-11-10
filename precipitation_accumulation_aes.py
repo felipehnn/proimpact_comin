@@ -23,12 +23,20 @@ rank = comm.Get_rank()
 parser = argparse.ArgumentParser()
 parser.add_argument("--interval", type=int, default=None,
                     help="Specify the accumulation interval in seconds")
+parser.add_argument("--floor", type=float, default=None,
+                    help="Set a floor in kg/m2 below which the accumulated precipitation is set to zero")
 args = parser.parse_args(comin.current_get_plugin_info().args)
 
 if args.interval is None:
     accumulation_interval = 300
     if rank == 0:
-        print(f"No precip interval is specified, using default value of 300 seconds.",
+        print(f"No precip interval is specified. Using default value of 300 seconds.",
+              file=sys.stderr)
+
+if args.floor is None:
+    floor = 0.01
+    if rank == 0:
+        print(f"No floor is specified. Using default value of 0.01 kg/m2.",
               file=sys.stderr)
 else:
     accumulation_interval = args.interval
