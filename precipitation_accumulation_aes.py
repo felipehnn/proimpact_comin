@@ -14,6 +14,7 @@ Author: Felipe Navarrete (GERICS-Hereon; felipe.navarrete@hereon.de)
 import sys
 import comin
 import argparse
+from datetime import datetime
 import numpy as np
 from mpi4py import MPI
 
@@ -30,18 +31,23 @@ args = parser.parse_args(comin.current_get_plugin_info().args)
 if args.interval is None:
     accumulation_interval = 300
     if rank == 0:
-        print(f"No precip interval is specified. Using default value of 300 seconds.",
-              file=sys.stderr)
-
-if args.floor is None:
-    floor = 0.01
-    if rank == 0:
-        print(f"No floor is specified. Using default value of 0.01 kg/m2.",
+        print(f"ComIn Plugin: No precip interval is specified. Using default value of 300 seconds.",
               file=sys.stderr)
 else:
     accumulation_interval = args.interval
     if rank == 0:
         print(f"ComIn Plugin: precipitation interval set to {accumulation_interval} seconds.",
+              file=sys.stderr)
+
+if args.floor is None:
+    floor = 0.01
+    if rank == 0:
+        print(f"ComIn Plugin: No floor is specified. Using default value of 0.01 kg/m2.",
+              file=sys.stderr)
+else:
+    floor = args.floor
+    if rank == 0:
+        print(f"ComIn Plugin: Setting precipitation floor to {floor} kg/m2.",
               file=sys.stderr)
 
 # domain
@@ -93,7 +99,7 @@ def accumulate_precipitation():
     pr_flux = np.ma.masked_array(np.squeeze(pr_var), mask=mask_2d)
     timer = np.ma.masked_array(np.squeeze(prec_timer), mask=mask_2d)
     # Accumulated precipitation 
-    tot_prec_acc_np = np.squeeze(tot_prec_acc)
+    tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
     
     # Check if we need to reset (where timer >= accumulation_interval)
     reset_mask = timer > accumulation_interval
@@ -104,6 +110,25 @@ def accumulate_precipitation():
     timer[:] = timer[:] + dt_phy_sec
     prec_increment = pr_flux * dt_phy_sec
     tot_prec_acc_np[:] = tot_prec_acc_np[:] + prec_increment
+
+@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
+def precipitation_floor():
+    """
+    Apply the precipitation floor before writing the output
+    """
+    current_time = comin.current_get_datetime()
+    current_datetime = datetime.fromisoformat(current_time)
+    seconds = current_datetime.minute*60 + current_datetime.second
+
+    # Are we writing output now?
+    if seconds % accumulation_interval == 0:
+        mask_2d = (decomp_domain_np != 0)
+        tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
+        floor_mask = tot_prec_acc_np < floor
+        if np.any(floor_mask):
+            tot_prec_acc_np[floor_mask] = 0.0
+            if rank==0:
+                print(f"ComIn Plugin: Reseting at time {current_datetime}")
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
 def precipitation_destructor():
