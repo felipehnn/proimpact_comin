@@ -40,9 +40,9 @@ else:
               file=sys.stderr)
 
 if args.floor is None:
-    floor = 0.01
+    floor = 0.0
     if rank == 0:
-        print(f"ComIn Plugin: No floor is specified. Using default value of 0.01 kg/m2.",
+        print(f"ComIn Plugin: No floor is specified. Using default value of 0.0 kg/m2 (no floor)",
               file=sys.stderr)
 else:
     floor = args.floor
@@ -127,8 +127,6 @@ def precipitation_floor():
         floor_mask = tot_prec_acc_np < floor
         if np.any(floor_mask):
             tot_prec_acc_np[floor_mask] = 0.0
-            if rank==0:
-                print(f"ComIn Plugin: Reseting at time {current_datetime}")
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
 def precipitation_destructor():
