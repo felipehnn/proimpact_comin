@@ -22,10 +22,14 @@ comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 rank = comm.Get_rank()
 
 parser = argparse.ArgumentParser()
+
 parser.add_argument("--interval", type=int, default=None,
                     help="Specify the accumulation interval in seconds")
 parser.add_argument("--floor", type=float, default=None,
                     help="Set a floor in kg/m2 below which the accumulated precipitation is set to zero")
+parser.add_argument("--floor_to_zero", action="store_true", default=False,
+                    help="Set the values below the floor to zero. Default: set to NaN")
+
 args = parser.parse_args(comin.current_get_plugin_info().args)
 
 if args.interval is None:
@@ -48,6 +52,17 @@ else:
     floor = args.floor
     if rank == 0:
         print(f"ComIn Plugin: Setting precipitation floor to {floor} kg/m2.",
+              file=sys.stderr)
+
+if args.floor_to_zero:
+    floor_value = 0.0
+    if rank == 0:
+        print(f"ComIn Plugin: Values below {floor} kg/m2 will be set to {floor_value}.",
+              file=sys.stderr)
+else:
+    floor_value = np.nan
+    if rank == 0:
+        print(f"ComIn Plugin: Values below {floor} kg/m2 will be set to {floor_value}.",
               file=sys.stderr)
 
 # domain
@@ -126,7 +141,7 @@ def precipitation_floor():
         tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
         floor_mask = tot_prec_acc_np < floor
         if np.any(floor_mask):
-            tot_prec_acc_np[floor_mask] = 0.0
+            tot_prec_acc_np[floor_mask] = floor_value
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
 def precipitation_destructor():
