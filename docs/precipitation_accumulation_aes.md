@@ -5,7 +5,7 @@ work with NWP.
 
 Call as e.g.
 ```bash
-$ /path/to/precipitation_accumulation_aes.py --interval 300 --floor 1.0
+/path/to/precipitation_accumulation_aes.py --interval 300 --floor 1.0
 ```
 
 Set the required value of `--interval` in seconds to record and accumulate
