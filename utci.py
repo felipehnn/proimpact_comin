@@ -4,6 +4,7 @@ Test Plugin for computing the UTCI during model runtime.
 NOTE: Works for AES physics only.
 """
 
+import sys
 import comin
 import argparse
 import numpy as np
@@ -35,6 +36,63 @@ comin.metadata_set(vd_utci,
                       standard_name="UTCI",
                       long_name="Universal Thermal Climate Index",
                       units="C")
+
+def calc_sat_pres_water(temp_K):
+    """
+    Calculate saturation vapor pressure over liquid water.
+
+    Parameters:
+    -----------
+    temp_K : array
+        Temperature in Kelvin
+
+    Returns:
+    --------
+    array
+        Saturation vapor pressure in Pa
+    """
+    # Constants from ICON (mo_aes_thermo.f90)
+    c1es = 610.78      # Pa
+    c3les = 17.269     # dimensionless
+    c4les = 35.86      # K
+    tmelt = 273.15     # K
+
+    return c1es * np.exp(c3les * (temp_K - tmelt) / (temp_K - c4les))
+
+def calc_sat_pres_ice(temp_K):
+    """
+    Calculate saturation vapor pressure over ice.
+
+    Parameters:
+    -----------
+    temp_K : array
+        Temperature in Kelvin
+
+    Returns:
+    --------
+    array
+        Saturation vapor pressure in Pa
+    """
+    # Constants from ICON (mo_aes_thermo.f90)
+    c1es = 610.78      # Pa
+    c3ies = 21.875     # dimensionless
+    c4ies = 7.66       # K
+    tmelt = 273.15     # K
+
+    return c1es * np.exp(c3ies * (temp_K - tmelt) / (temp_K - c4ies))
+
+def calc_sat_pres_mixed(temp_K):
+    """Calculate saturation vapor pressure with mixed phase."""
+    tmelt = 273.15
+
+    esat_water = calc_sat_pres_water(temp_K)
+    esat_ice = calc_sat_pres_ice(temp_K)
+
+    # Simple linear blend (ICON uses more sophisticated schemes)
+    # You can adjust this based on your needs
+    esat = np.where(temp_K >= tmelt, esat_water, esat_ice)
+
+    return esat
 
 def compute_mrt(rlds, rlus, rsds, rsus, rsds_diff, fp, i_star):
     mrt = np.power((1/SIGMA_SB) * (
@@ -269,7 +327,7 @@ def _compute_utci(t_2m, sfcwind, dt, wvp):
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def utci_constructor():
     # access the variables
-    global utci, tas, d, cosmu0, rlds, rlus, rsds, rsus, sfcwind, hur, sat_pres_water
+    global utci, tas, d, cosmu0, rlds, rlus, rsds, rsus, sfcwind, hur, rsdt, daylght_frc
     utci = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("utci", jg), flag=comin.COMIN_FLAG_WRITE)
     tas = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ)
     cosmu0 = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("cosmu0", jg), flag=comin.COMIN_FLAG_READ)
@@ -278,12 +336,12 @@ def utci_constructor():
     rsds = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsds", jg), flag=comin.COMIN_FLAG_READ)
     rsus = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsus", jg), flag=comin.COMIN_FLAG_READ)
     sfcwind = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ)
-    hur = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("hurs", jg), flag=comin.COMIN_FLAG_READ)
-    esat = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("esat", jg), flag=comin.COMIN_FLAG_READ)  # in Pa
+    hur = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("hur", jg), flag=comin.COMIN_FLAG_READ)
+    #esat = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("esat", jg), flag=comin.COMIN_FLAG_READ)  # in Pa
     rsdt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsdt", jg), flag=comin.COMIN_FLAG_READ)
     daylght_frc = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("daylght_frc", jg), flag=comin.COMIN_FLAG_READ)
 
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
+@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_AFTER)
 def compute_utci():
     mask_2d = (decomp_domain_np != 0)
     cosmu0_np = np.ma.masked_array(np.squeeze(cosmu0), mask=mask_2d)
@@ -292,16 +350,23 @@ def compute_utci():
     rsds_np = np.ma.masked_array(np.squeeze(rsds), mask=mask_2d)
     rsus_np = np.ma.masked_array(np.squeeze(rsus), mask=mask_2d)
     tas_np = np.ma.masked_array(np.squeeze(tas), mask=mask_2d)
-    psctm_np = np.ma.masked_array(np.squeeze(psctm), mask=mask_2d)
-    hus_np = np.ma.masked_array(np.squeeze(hus), mask=mask_2d)
-    esat_np = np.ma.masked_array(np.squeeze(esat), mask=mask_2d)
+    #psctm_np = np.ma.masked_array(np.squeeze(psctm), mask=mask_2d)
+    hur_np = np.asarray(hur)  # hur is a 3D array; get the value closest to the surface
+    hur_np = hur_np[:, 0, :]
+    hur_np = np.ma.masked_array(np.squeeze(hur_np), mask=mask_2d)
+    #esat_np = np.ma.masked_array(np.squeeze(esat), mask=mask_2d)
     scfwind_np = np.ma.masked_array(np.squeeze(sfcwind), mask=mask_2d)
     rsdt_np = np.ma.masked_array(np.squeeze(rsdt), mask=mask_2d)
-    daylght_frc_np = np.ma.masked_array(np.squeeze(daylght), mask=mask_2d)
-    utci_np = np.squeeze(np.asarray(utci_np))
+    daylght_frc_np = np.ma.masked_array(np.squeeze(daylght_frc), mask=mask_2d)
+    utci_np = np.squeeze(np.asarray(utci))
 
-    esat_np = esat_np*1e-3  # in kPa
-    wvp = esat_np * hus  # water vapor pressure in kPa
+    if rank==0:
+        print(f'FHN: current_time = {comin.current_get_datetime()}', file=sys.stderr)
+        print(f'FHN: tas_np = {tas_np}', file=sys.stderr)
+        print(f'FHN: cosmu0_np = {cosmu0_np}', file=sys.stderr)
+    esat = calc_sat_pres_mixed(tas_np)
+    esat = esat*1e-3  # in kPa
+    wvp = esat * hur  # water vapor pressure in kPa
 
     gamma = np.arcsin(cosmu0_np)
     fp = 0.308 * np.cos(0.988*gamma - gamma**2/50000)
@@ -310,7 +375,7 @@ def compute_utci():
     # accessed via ComIn. Solution: work with rsdt0 (= psctm)
     # rsdt(jc) = rsdt0 * cosmu0(jc) * daylght_frc(jc)
     # factor = rsdt0 * cosmu0 = rsdt/daylght_frc
-    factor = rsdt_np / daylght_frac_np
+    factor = rsdt_np / daylght_frc_np
     s_star = rsds*(factor**-1)
     s_star = np.where(s_star > 0.85, 0.85, s_star)
     fdir_ratio = np.exp(3 - 1.34*s_star - 1.65 * (s_star**-1))
@@ -319,7 +384,7 @@ def compute_utci():
     rsds_dir = fdir_ratio * rsds
     rsds_diff = rsds_np - rsds_dir
 
-    i_star = np.where(cosmu0 > 0.001, rsds_direct/cosmu0, 0)
+    i_star = np.where(cosmu0_np > 0.001, rsds_dir/cosmu0_np, 0)
 
     mrt = compute_mrt(rlds_np, rlus_np, rsds_np, rsus_np, rsds_diff, fp, i_star)
 
