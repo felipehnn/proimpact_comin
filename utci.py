@@ -10,8 +10,10 @@ import argparse
 import numpy as np
 from numba import jit
 from mpi4py import MPI
+from datetime import datetime
 
 SIGMA_SB = 5.67e-8
+_first_call_done = False
 
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 rank = comm.Get_rank()
@@ -27,7 +29,7 @@ jg = 1
 domain = comin.descrdata_get_domain(jg)
 decomp_domain_np = np.asarray(domain.cells.decomp_domain)
 
-# register the variable
+# register the variables
 vd_utci = ("utci", jg)
 comin.var_request_add(vd_utci, lmodexclusive=False)
 comin.metadata_set(vd_utci,
@@ -35,6 +37,15 @@ comin.metadata_set(vd_utci,
                       zaxis_id=comin.COMIN_ZAXIS_2D,
                       standard_name="UTCI",
                       long_name="Universal Thermal Climate Index",
+                      units="C")
+
+vd_mrt = ("mrt", jg)
+comin.var_request_add(vd_mrt, lmodexclusive=False)
+comin.metadata_set(vd_mrt,
+                      hgrid_id=1,
+                      zaxis_id=comin.COMIN_ZAXIS_2D,
+                      standard_name="Tmrt",
+                      long_name="Mean Radiant Temperature",
                       units="C")
 
 def calc_sat_pres_water(temp_K):
@@ -95,14 +106,14 @@ def calc_sat_pres_mixed(temp_K):
     return esat
 
 def compute_mrt(rlds, rlus, rsds, rsus, rsds_diff, fp, i_star):
-    mrt = np.power((1/SIGMA_SB) * (
+    _mrt = np.power((1/SIGMA_SB) * (
         0.5*rlds + 0.5*rlus + (0.7/0.97)*(0.5*rsds_diff + 0.5*rsus + fp*i_star)
     ), 0.25
     )
-    return mrt
+    return _mrt
 
 @jit(nopython=True)
-def _compute_utci(t_2m, sfcwind, dt, wvp):
+def _compute_utci(t_2m, sfcwind, _mrt, wvp):
     """
     Polynomial that computes the UTCI.
 
@@ -110,6 +121,7 @@ def _compute_utci(t_2m, sfcwind, dt, wvp):
     http://www.utci.org/public/UTCI%20Program%20Code/UTCI_a002.f90
     by Peter Bröde.
     """
+    dt = _mrt - t_2m  # temperature delta
     utci = (t_2m
             + 6.07562052e-1
             + -2.27712343e-2 * t_2m
@@ -327,7 +339,7 @@ def _compute_utci(t_2m, sfcwind, dt, wvp):
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def utci_constructor():
     # access the variables
-    global utci, tas, d, cosmu0, rlds, rlus, rsds, rsus, sfcwind, hur, rsdt, daylght_frc
+    global utci, tas, d, cosmu0, mrt, rlds, rlus, rsds, rsus, sfcwind, hur, rsdt, daylght_frc, _first_call_done
     utci = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("utci", jg), flag=comin.COMIN_FLAG_WRITE)
     tas = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ)
     cosmu0 = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("cosmu0", jg), flag=comin.COMIN_FLAG_READ)
@@ -340,9 +352,17 @@ def utci_constructor():
     #esat = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("esat", jg), flag=comin.COMIN_FLAG_READ)  # in Pa
     rsdt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsdt", jg), flag=comin.COMIN_FLAG_READ)
     daylght_frc = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("daylght_frc", jg), flag=comin.COMIN_FLAG_READ)
+    mrt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("mrt", jg), flag=comin.COMIN_FLAG_WRITE)
+    _first_call_done = False
 
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_AFTER)
+@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def compute_utci():
+    global _first_call_done
+    if not _first_call_done:
+        _first_call_done = True
+        if rank==0:
+            print(f'FHN: first call detected. Setting _first_call_done to True', file=sys.stderr)
+        return
     mask_2d = (decomp_domain_np != 0)
     cosmu0_np = np.ma.masked_array(np.squeeze(cosmu0), mask=mask_2d)
     rlds_np = np.ma.masked_array(np.squeeze(rlds), mask=mask_2d)
@@ -350,23 +370,19 @@ def compute_utci():
     rsds_np = np.ma.masked_array(np.squeeze(rsds), mask=mask_2d)
     rsus_np = np.ma.masked_array(np.squeeze(rsus), mask=mask_2d)
     tas_np = np.ma.masked_array(np.squeeze(tas), mask=mask_2d)
-    #psctm_np = np.ma.masked_array(np.squeeze(psctm), mask=mask_2d)
     hur_np = np.asarray(hur)  # hur is a 3D array; get the value closest to the surface
     hur_np = hur_np[:, 0, :]
     hur_np = np.ma.masked_array(np.squeeze(hur_np), mask=mask_2d)
     #esat_np = np.ma.masked_array(np.squeeze(esat), mask=mask_2d)
-    scfwind_np = np.ma.masked_array(np.squeeze(sfcwind), mask=mask_2d)
+    sfcwind_np = np.ma.masked_array(np.squeeze(sfcwind), mask=mask_2d)
     rsdt_np = np.ma.masked_array(np.squeeze(rsdt), mask=mask_2d)
     daylght_frc_np = np.ma.masked_array(np.squeeze(daylght_frc), mask=mask_2d)
     utci_np = np.squeeze(np.asarray(utci))
+    mrt_np = np.squeeze(np.asarray(mrt))
 
-    if rank==0:
-        print(f'FHN: current_time = {comin.current_get_datetime()}', file=sys.stderr)
-        print(f'FHN: tas_np = {tas_np}', file=sys.stderr)
-        print(f'FHN: cosmu0_np = {cosmu0_np}', file=sys.stderr)
     esat = calc_sat_pres_mixed(tas_np)
-    esat = esat*1e-3  # in kPa
-    wvp = esat * hur  # water vapor pressure in kPa
+    wvp = esat * (hur_np/100)  # water vapor pressure in Pa; convert hur from 0-100 to 0-1
+    wvp = wvp / 100  # in hPa
 
     gamma = np.arcsin(cosmu0_np)
     fp = 0.308 * np.cos(0.988*gamma - gamma**2/50000)
@@ -376,16 +392,23 @@ def compute_utci():
     # rsdt(jc) = rsdt0 * cosmu0(jc) * daylght_frc(jc)
     # factor = rsdt0 * cosmu0 = rsdt/daylght_frc
     factor = rsdt_np / daylght_frc_np
-    s_star = rsds*(factor**-1)
+    s_star = rsds_np*(factor**-1)
     s_star = np.where(s_star > 0.85, 0.85, s_star)
     fdir_ratio = np.exp(3 - 1.34*s_star - 1.65 * (s_star**-1))
     fdir_ratio = np.where(fdir_ratio > 0.9, 0.9, fdir_ratio)
 
-    rsds_dir = fdir_ratio * rsds
+    rsds_dir = fdir_ratio * rsds_np
     rsds_diff = rsds_np - rsds_dir
 
     i_star = np.where(cosmu0_np > 0.001, rsds_dir/cosmu0_np, 0)
 
-    mrt = compute_mrt(rlds_np, rlus_np, rsds_np, rsus_np, rsds_diff, fp, i_star)
+    mrt_np[:] = compute_mrt(rlds_np, rlus_np, rsds_np, rsus_np, rsds_diff, fp, i_star)
+    mrt_np[:] = mrt_np[:] - 273.15  # in Celsius
 
-    utci_np = _compute_utci(tas_np, sfcwind_np, mrt, wvp)
+    tas_np = tas_np - 273.15  # convert to Celsius
+    tas_data = np.ma.getdata(tas_np)
+    sfcwind_data = np.ma.getdata(sfcwind_np)
+    mrt_data = np.ma.getdata(mrt_np[:])
+    wvp_data = np.ma.getdata(wvp)
+
+    utci_np[:] = _compute_utci(tas_data, sfcwind_data, mrt_data, wvp_data)
