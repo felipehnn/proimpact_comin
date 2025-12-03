@@ -120,6 +120,23 @@ def _compute_utci(t_2m, sfcwind, _mrt, wvp):
     Taken from xclim's utci function, which in turn is taken from
     http://www.utci.org/public/UTCI%20Program%20Code/UTCI_a002.f90
     by Peter Bröde.
+    
+    
+    Parameters:
+    -----------
+    t_2m : array
+        Temperature in Celsius
+    sfcwind : array
+        Surface wind speed in m/s
+    _mrt : array
+        Mean radian temperature
+    wvp : array
+        Water vapor pressure in kPa
+
+    Returns:
+    --------
+    array
+        UTCI in Celsius
     """
     dt = _mrt - t_2m  # temperature delta
     utci = (t_2m
@@ -382,7 +399,7 @@ def compute_utci():
 
     esat = calc_sat_pres_mixed(tas_np)
     wvp = esat * (hur_np/100)  # water vapor pressure in Pa; convert hur from 0-100 to 0-1
-    wvp = wvp / 100  # in hPa
+    wvp = wvp / 1000  # in kPa
 
     gamma = np.arcsin(cosmu0_np)
     fp = 0.308 * np.cos(0.988*gamma - gamma**2/50000)
