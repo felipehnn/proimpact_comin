@@ -408,8 +408,22 @@ def compute_utci():
     # accessed via ComIn. Solution: work with rsdt0 (= psctm)
     # rsdt(jc) = rsdt0 * cosmu0(jc) * daylght_frc(jc)
     # factor = rsdt0 * cosmu0 = rsdt/daylght_frc
-    factor = rsdt_np / daylght_frc_np
-    s_star = rsds_np*(factor**-1)
+
+    #factor = rsdt_np / daylght_frc_np
+    #s_star = rsds_np*(factor**-1)
+    # Avoid division by zero for nighttime (daylght_frc ≈ 0)
+    factor = np.where(
+        daylght_frc_np > 0.001,  # Sunlit threshold
+        rsdt_np / daylght_frc_np,
+        1.0  # Dummy value, will be masked out below
+    )
+    
+    s_star = np.where(
+        (cosmu0_np > 0.001) & (daylght_frc_np > 0.001),  # Only for sunlit conditions
+        rsds_np / factor,
+        0.0
+    )
+
     s_star = np.where(s_star > 0.85, 0.85, s_star)
     fdir_ratio = np.exp(3 - 1.34*s_star - 1.65 * (s_star**-1))
     fdir_ratio = np.where(fdir_ratio > 0.9, 0.9, fdir_ratio)
