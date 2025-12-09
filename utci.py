@@ -409,8 +409,6 @@ def compute_utci():
     # rsdt(jc) = rsdt0 * cosmu0(jc) * daylght_frc(jc)
     # factor = rsdt0 * cosmu0 = rsdt/daylght_frc
 
-    #factor = rsdt_np / daylght_frc_np
-    #s_star = rsds_np*(factor**-1)
     # Avoid division by zero for nighttime (daylght_frc ≈ 0)
     factor = np.where(
         daylght_frc_np > 0.001,  # Sunlit threshold
