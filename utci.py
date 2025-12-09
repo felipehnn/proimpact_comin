@@ -113,7 +113,7 @@ def compute_mrt(rlds, rlus, rsds, rsus, rsds_diff, fp, i_star):
     return _mrt
 
 @jit(nopython=True)
-def _compute_utci(t_2m, sfcwind, _mrt, wvp):
+def _compute_utci(t_2m, sfcwind, _mrt, wvp, dt):
     """
     Polynomial that computes the UTCI.
 
@@ -138,7 +138,6 @@ def _compute_utci(t_2m, sfcwind, _mrt, wvp):
     array
         UTCI in Celsius
     """
-    dt = _mrt - t_2m  # temperature delta
     utci = (t_2m
             + 6.07562052e-1
             + -2.27712343e-2 * t_2m
@@ -439,5 +438,9 @@ def compute_utci():
     sfcwind_data = np.ma.getdata(sfcwind_np)
     mrt_data = np.ma.getdata(mrt_np[:])
     wvp_data = np.ma.getdata(wvp)
+    dt = mrt_data - tas_data
 
-    utci_np[:] = _compute_utci(tas_data, sfcwind_data, mrt_data, wvp_data)
+    utci_np[:] = _compute_utci(tas_data, sfcwind_data, mrt_data, wvp_data, dt)
+    utci_np[:] = np.where((-50 < tas_data) & (tas_data < 50) & \
+                 (-30 < dt) & (dt < 30) & \
+                 (0.5 <= sfcwind_data) & (sfcwind_data < 17.0), utci_np, np.nan)
