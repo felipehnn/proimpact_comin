@@ -100,7 +100,6 @@ def calc_sat_pres_mixed(temp_K):
     esat_ice = calc_sat_pres_ice(temp_K)
 
     # Simple linear blend (ICON uses more sophisticated schemes)
-    # You can adjust this based on your needs
     esat = np.where(temp_K >= tmelt, esat_water, esat_ice)
 
     return esat
@@ -365,7 +364,6 @@ def utci_constructor():
     rsus = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsus", jg), flag=comin.COMIN_FLAG_READ)
     sfcwind = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ)
     hur = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("hur", jg), flag=comin.COMIN_FLAG_READ)
-    #esat = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("esat", jg), flag=comin.COMIN_FLAG_READ)  # in Pa
     rsdt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsdt", jg), flag=comin.COMIN_FLAG_READ)
     daylght_frc = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("daylght_frc", jg), flag=comin.COMIN_FLAG_READ)
     mrt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("mrt", jg), flag=comin.COMIN_FLAG_WRITE)
@@ -389,7 +387,6 @@ def compute_utci():
     hur_np = np.asarray(hur)  # hur is a 3D array; get the value closest to the surface
     hur_np = hur_np[:, 0, :]
     hur_np = np.ma.masked_array(np.squeeze(hur_np), mask=mask_2d)
-    #esat_np = np.ma.masked_array(np.squeeze(esat), mask=mask_2d)
     sfcwind_np = np.ma.masked_array(np.squeeze(sfcwind), mask=mask_2d)
     rsdt_np = np.ma.masked_array(np.squeeze(rsdt), mask=mask_2d)
     daylght_frc_np = np.ma.masked_array(np.squeeze(daylght_frc), mask=mask_2d)
