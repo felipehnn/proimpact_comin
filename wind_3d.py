@@ -22,7 +22,7 @@ rank = comm.Get_rank()
 
 # Configuration constants
 COUNT = 0  # Count to keep track for the averaging
-CUTIN = 5.0  # Cut-in speed in m/s
+CUTIN = 0.0  # Cut-in speed in m/s
 CUTIN_VALUE = np.nan  # Value to assign when wind < CUTIN
 AVG_INTERVAL = 300  # Averaging interval in seconds
 HEIGHT_LEVELS = [50, 100, 120]  # Target heights above ground in meters
@@ -55,120 +55,52 @@ comin.metadata_set(vd_timer,
                    long_name='Timer for wind averaging interval',
                    units='s')
 
+# =============================================================================
+# Precomputed arrays (initialized in constructor, used every timestep)
+# These are constant for the entire simulation and computed once for efficiency
+# =============================================================================
+PRECOMPUTED = {
+    'initialized': False,
+    'mask_1d': None,           # Boolean mask for halo cells (ncells,)
+    'valid_mask': None,        # Inverse of mask_1d (ncells,)
+    'dt_phy_sec': None,        # Physics timestep [s]
+    'topo_1d': None,           # Flattened topography (ncells,)
+    'z_agl': None,             # Height above ground level (ncells, nlev)
+    'ncells': None,            # Total number of cells
+    'nlev_local': None,        # Number of vertical levels
+    'idx': None,               # Index array for advanced indexing (ncells,)
+    'is_3d': None,             # Whether input arrays are 3D
+    'nproma': None,            # Cells per block
+    'nblks': None,             # Number of blocks
+    # Per-height precomputed interpolation data
+    'interp_50m': None,        # Dict with k_upper, k_lower, weight for 50m
+    'interp_100m': None,       # Dict with k_upper, k_lower, weight for 100m
+    'interp_120m': None,       # Dict with k_upper, k_lower, weight for 120m
+}
 
-def interpolate_wind_to_height(u_3d, v_3d, z_agl, target_height, mask_2d):
+
+def precompute_interpolation_indices(z_agl, target_height, ncells, nlev_local):
     """
-    Interpolate u and v wind components to a target height above ground level.
+    Precompute the bracketing level indices and interpolation weights for a target height.
+
+    These values are constant because z_agl (model level heights above ground)
+    and target_height don't change during the simulation.
 
     Parameters
     ----------
-    u_3d : np.ndarray
-        Eastward wind component (nproma, nlev)
-    v_3d : np.ndarray
-        Northward wind component (nproma, nlev)
-    z_agl : np.ndarray
-        Height above ground level for each model level (nproma, nlev)
-        Note: levels are ordered from top (index 0) to bottom (index nlev-1)
-    target_height : float
-        Target height above ground in meters
-    mask_2d : np.ndarray
-        Boolean mask for valid (prognostic) cells
-
-    Returns
-    -------
-    wind_speed : np.ndarray
-        Wind speed at target height (nproma,)
-    """
-    nproma = u_3d.shape[0]
-    u_interp = np.zeros(nproma)
-    v_interp = np.zeros(nproma)
-
-    # Loop over horizontal points
-    # Note: ICON levels are ordered top-to-bottom, so level 0 is highest, nlev-1 is lowest
-    for jc in range(nproma):
-        if mask_2d[jc]:
-            # Skip masked (halo) cells
-            u_interp[jc] = np.nan
-            v_interp[jc] = np.nan
-            continue
-
-        # Find the two levels bracketing the target height
-        # z_agl[jc, :] goes from high altitude (index 0) to low altitude (index nlev-1)
-        z_col = z_agl[jc, :]
-
-        # Check if target height is within the model domain
-        if target_height > z_col[0]:
-            # Target is above highest model level - extrapolate from top two levels
-            k_upper = 0
-            k_lower = 1
-        elif target_height < z_col[-1]:
-            # Target is below lowest model level - extrapolate from bottom two levels
-            k_upper = len(z_col) - 2
-            k_lower = len(z_col) - 1
-        else:
-            # Find bracketing levels
-            # We want k_upper where z_col[k_upper] > target_height > z_col[k_lower]
-            for k in range(len(z_col) - 1):
-                if z_col[k] >= target_height >= z_col[k + 1]:
-                    k_upper = k
-                    k_lower = k + 1
-                    break
-
-        # Linear interpolation weight
-        z_upper = z_col[k_upper]
-        z_lower = z_col[k_lower]
-
-        if abs(z_upper - z_lower) < 1e-6:
-            # Levels too close, just use upper level
-            weight = 1.0
-        else:
-            weight = (target_height - z_lower) / (z_upper - z_lower)
-
-        # Interpolate u and v
-        u_interp[jc] = weight * u_3d[jc, k_upper] + (1.0 - weight) * u_3d[jc, k_lower]
-        v_interp[jc] = weight * v_3d[jc, k_upper] + (1.0 - weight) * v_3d[jc, k_lower]
-
-    # Compute wind speed
-    wind_speed = np.sqrt(u_interp**2 + v_interp**2)
-
-    return wind_speed
-
-
-def interpolate_wind_to_height_vectorized(u_2d, v_2d, z_agl, target_height, mask_1d):
-    """
-    Vectorized version: Interpolate u and v wind components to a target height.
-
-    Parameters
-    ----------
-    u_2d : np.ndarray
-        Eastward wind component, shape (ncells, nlev)
-    v_2d : np.ndarray
-        Northward wind component, shape (ncells, nlev)
     z_agl : np.ndarray
         Height above ground level, shape (ncells, nlev)
-        Levels ordered top-to-bottom (index 0 = highest)
     target_height : float
-        Target height in meters above ground
-    mask_1d : np.ndarray
-        Boolean mask, shape (ncells,). True = masked/invalid cell
+        Target height in meters
+    ncells : int
+        Number of horizontal cells
+    nlev_local : int
+        Number of vertical levels
 
     Returns
     -------
-    wind_speed : np.ndarray
-        Wind speed at target height, shape (ncells,)
+    dict with keys: k_upper, k_lower, weight
     """
-    ncells, nlev_local = u_2d.shape
-
-    # Initialize output arrays
-    u_interp = np.full(ncells, np.nan)
-    v_interp = np.full(ncells, np.nan)
-
-    # Only process valid (non-masked) cells
-    valid_mask = ~mask_1d
-
-    if not np.any(valid_mask):
-        return np.full(ncells, np.nan)
-
     # Create a boolean array: True where z_agl >= target_height
     above_target = z_agl >= target_height  # (ncells, nlev)
 
@@ -199,6 +131,50 @@ def interpolate_wind_to_height_vectorized(u_2d, v_2d, z_agl, target_height, mask
     weight = (target_height - z_lower) / dz
     weight = np.clip(weight, 0.0, 1.0)
 
+    return {
+        'k_upper': k_upper,
+        'k_lower': k_lower,
+        'weight': weight,
+    }
+
+
+def interpolate_wind_with_precomputed(u_2d, v_2d, interp_data, valid_mask, idx, ncells):
+    """
+    Interpolate wind using precomputed indices and weights.
+
+    This is much faster than recomputing the bracketing levels every timestep.
+
+    Parameters
+    ----------
+    u_2d : np.ndarray
+        Eastward wind component, shape (ncells, nlev)
+    v_2d : np.ndarray
+        Northward wind component, shape (ncells, nlev)
+    interp_data : dict
+        Precomputed interpolation data with k_upper, k_lower, weight
+    valid_mask : np.ndarray
+        Boolean mask for valid cells (ncells,)
+    idx : np.ndarray
+        Index array (ncells,)
+    ncells : int
+        Number of cells
+
+    Returns
+    -------
+    wind_speed : np.ndarray
+        Wind speed at target height, shape (ncells,)
+    """
+    k_upper = interp_data['k_upper']
+    k_lower = interp_data['k_lower']
+    weight = interp_data['weight']
+
+    # Initialize output arrays
+    u_interp = np.full(ncells, np.nan)
+    v_interp = np.full(ncells, np.nan)
+
+    if not np.any(valid_mask):
+        return np.full(ncells, np.nan)
+
     # Get wind components at bracketing levels
     u_upper = u_2d[idx, k_upper]
     u_lower = u_2d[idx, k_lower]
@@ -218,11 +194,19 @@ def interpolate_wind_to_height_vectorized(u_2d, v_2d, z_agl, target_height, mask
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def wind_3d_constructor():
     """
-    Access ICON variables needed for wind interpolation.
+    Access ICON variables and precompute constant arrays.
+
+    This function runs once at the beginning of the simulation and precomputes
+    all arrays that don't change during the simulation:
+    - Mask arrays (based on domain decomposition)
+    - Physics timestep
+    - Topography
+    - Height above ground level for all model levels
+    - Interpolation indices and weights for each target height
     """
     global wind_50m, wind_100m, wind_120m, wind_avg_timer
     global u_3d, v_3d, z_mc, topography_c
-    global COUNT, AVG_INTERVAL
+    global COUNT, AVG_INTERVAL, PRECOMPUTED
 
     # Output variables (wind at different heights)
     wind_50m = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("wind_50m", jg), flag=comin.COMIN_FLAG_WRITE)
@@ -238,68 +222,109 @@ def wind_3d_constructor():
     z_mc = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("z_mc", jg), flag=comin.COMIN_FLAG_READ)
     topography_c = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("topography_c", jg), flag=comin.COMIN_FLAG_READ)
 
+    # =========================================================================
+    # PRECOMPUTE CONSTANT ARRAYS
+    # =========================================================================
+
+    # 1. Mask arrays (constant - based on domain decomposition)
+    mask_2d = (decomp_domain_np != 0)
+    PRECOMPUTED['mask_1d'] = mask_2d.flatten()
+    PRECOMPUTED['valid_mask'] = ~PRECOMPUTED['mask_1d']
+
+    # 2. Physics timestep (constant for the simulation)
+    PRECOMPUTED['dt_phy_sec'] = comin.descrdata_get_timesteplength(jg)
+
+    # 3. Get geometry arrays and determine shapes
+    z_mc_np = np.squeeze(np.asarray(z_mc))
+    topo_np = np.squeeze(np.asarray(topography_c))
+
+    if z_mc_np.ndim == 3:
+        nproma, nlev_local, nblks = z_mc_np.shape
+        PRECOMPUTED['is_3d'] = True
+        PRECOMPUTED['nproma'] = nproma
+        PRECOMPUTED['nblks'] = nblks
+        PRECOMPUTED['nlev_local'] = nlev_local
+        PRECOMPUTED['ncells'] = nproma * nblks
+
+        # Reshape z_mc to (ncells, nlev)
+        z_mc_2d = z_mc_np.transpose(0, 2, 1).reshape(-1, nlev_local)
+        # Flatten topography to (ncells,)
+        topo_1d = topo_np.flatten()
+    else:
+        # 2D case (single block)
+        PRECOMPUTED['is_3d'] = False
+        PRECOMPUTED['nlev_local'] = z_mc_np.shape[1] if z_mc_np.ndim == 2 else 1
+        PRECOMPUTED['ncells'] = z_mc_np.shape[0] if z_mc_np.ndim >= 1 else 1
+        z_mc_2d = z_mc_np
+        topo_1d = topo_np.flatten()
+
+    PRECOMPUTED['topo_1d'] = topo_1d
+
+    # 4. Compute height above ground level (constant - model levels don't move)
+    PRECOMPUTED['z_agl'] = z_mc_2d - topo_1d[:, np.newaxis]
+
+    # 5. Index array for advanced indexing
+    PRECOMPUTED['idx'] = np.arange(PRECOMPUTED['ncells'])
+
+    # 6. Precompute interpolation indices and weights for each target height
+    ncells = PRECOMPUTED['ncells']
+    nlev_local = PRECOMPUTED['nlev_local']
+    z_agl = PRECOMPUTED['z_agl']
+
+    PRECOMPUTED['interp_50m'] = precompute_interpolation_indices(z_agl, 50.0, ncells, nlev_local)
+    PRECOMPUTED['interp_100m'] = precompute_interpolation_indices(z_agl, 100.0, ncells, nlev_local)
+    PRECOMPUTED['interp_120m'] = precompute_interpolation_indices(z_agl, 120.0, ncells, nlev_local)
+
+    PRECOMPUTED['initialized'] = True
+
     if rank == 0:
         print(f"ComIn - wind_3d.py: Constructor completed. nlev={nlev}, heights={HEIGHT_LEVELS}",
               file=sys.stderr)
+        print(f"ComIn - wind_3d.py: Precomputed arrays initialized. ncells={ncells}, "
+              f"is_3d={PRECOMPUTED['is_3d']}", file=sys.stderr)
 
 
 @comin.register_callback(comin.EP_ATM_PHYSICS_AFTER)
 def accumulate_wind():
     """
     Interpolate wind to target heights and accumulate for time averaging.
+
+    This function uses precomputed arrays for efficiency. Only the wind
+    components (u, v) are read fresh each timestep.
     """
     global COUNT
 
-    # Mask for prognostic cells (decomp_domain != 0 means halo/boundary)
-    # decomp_domain_np has shape (nproma, nblks) for 2D fields
-    mask_2d = (decomp_domain_np != 0)
-
-    # Get physics time step
-    dt_phy_sec = comin.descrdata_get_timesteplength(jg)
+    # Retrieve precomputed constants
+    mask_1d = PRECOMPUTED['mask_1d']
+    valid_mask = PRECOMPUTED['valid_mask']
+    dt_phy_sec = PRECOMPUTED['dt_phy_sec']
+    idx = PRECOMPUTED['idx']
+    ncells = PRECOMPUTED['ncells']
+    is_3d = PRECOMPUTED['is_3d']
+    nlev_local = PRECOMPUTED['nlev_local']
 
     # Get timer as numpy array - flatten to 1D
     timer_raw = np.asarray(wind_avg_timer)
     timer = np.squeeze(timer_raw).flatten()
-    mask_1d = mask_2d.flatten()
 
     # Get output wind arrays - flatten to 1D
     wind_50m_np = np.squeeze(np.asarray(wind_50m)).flatten()
     wind_100m_np = np.squeeze(np.asarray(wind_100m)).flatten()
     wind_120m_np = np.squeeze(np.asarray(wind_120m)).flatten()
 
-    # Get 3D input arrays and squeeze out singleton dimensions
-    # ICON shape is (nproma, nlev, nblks, 1, 1) - squeeze to (nproma, nlev, nblks)
+    # Get wind components (these change every timestep)
     u_np = np.squeeze(np.asarray(u_3d))
     v_np = np.squeeze(np.asarray(v_3d))
-    z_mc_np = np.squeeze(np.asarray(z_mc))
-    topo_np = np.squeeze(np.asarray(topography_c))
 
-    # After squeeze, shapes should be:
-    # - 3D fields: (nproma, nlev, nblks)
-    # - 2D fields: (nproma, nblks)
-    # We need to reshape to (ncells, nlev) where ncells = nproma * nblks
-
-    if u_np.ndim == 3:
-        nproma, nlev_local, nblks = u_np.shape
-        # Transpose to (nproma, nblks, nlev) then reshape to (ncells, nlev)
+    # Reshape wind arrays to (ncells, nlev)
+    if is_3d:
+        nproma = PRECOMPUTED['nproma']
+        nblks = PRECOMPUTED['nblks']
         u_2d = u_np.transpose(0, 2, 1).reshape(-1, nlev_local)
         v_2d = v_np.transpose(0, 2, 1).reshape(-1, nlev_local)
-        z_mc_2d = z_mc_np.transpose(0, 2, 1).reshape(-1, nlev_local)
-    elif u_np.ndim == 2:
-        # Already 2D (nproma, nlev) - single block case
+    else:
         u_2d = u_np
         v_2d = v_np
-        z_mc_2d = z_mc_np
-    else:
-        raise ValueError(f"Unexpected u_np dimensions: {u_np.ndim}")
-
-    # Flatten topography to 1D (ncells,)
-    # topo_np should be (nproma, nblks) after squeeze
-    topo_1d = topo_np.flatten()
-
-    # Compute height above ground level
-    # z_mc_2d is (ncells, nlev), topo_1d is (ncells,)
-    z_agl = z_mc_2d - topo_1d[:, np.newaxis]
 
     # Check if we need to reset (where timer >= AVG_INTERVAL)
     reset_mask = timer >= AVG_INTERVAL
@@ -310,15 +335,17 @@ def accumulate_wind():
         timer[reset_mask] = 0.0
         COUNT = 0
 
-    # Update timer (write back to original array)
+    # Update timer
     timer[:] = timer[:] + dt_phy_sec
-    # Write timer back to the ComIn variable
     timer_raw.flat[:] = timer
 
-    # Interpolate wind to each target height
-    wind_50m_instant = interpolate_wind_to_height_vectorized(u_2d, v_2d, z_agl, 50.0, mask_1d)
-    wind_100m_instant = interpolate_wind_to_height_vectorized(u_2d, v_2d, z_agl, 100.0, mask_1d)
-    wind_120m_instant = interpolate_wind_to_height_vectorized(u_2d, v_2d, z_agl, 120.0, mask_1d)
+    # Interpolate wind using precomputed indices and weights
+    wind_50m_instant = interpolate_wind_with_precomputed(
+        u_2d, v_2d, PRECOMPUTED['interp_50m'], valid_mask, idx, ncells)
+    wind_100m_instant = interpolate_wind_with_precomputed(
+        u_2d, v_2d, PRECOMPUTED['interp_100m'], valid_mask, idx, ncells)
+    wind_120m_instant = interpolate_wind_with_precomputed(
+        u_2d, v_2d, PRECOMPUTED['interp_120m'], valid_mask, idx, ncells)
 
     # Accumulate (handle NaN by treating as 0 for accumulation)
     wind_50m_instant = np.nan_to_num(wind_50m_instant, nan=0.0)
