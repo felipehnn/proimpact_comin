@@ -25,6 +25,8 @@ parser.add_argument("--floor", type=float, default=None,
                     help="Set a floor in kg/m2 below which the accumulated precipitation is set to zero")
 parser.add_argument("--floor_to_zero", action="store_true", default=False,
                     help="Set the values below the floor to zero. Default: set to NaN")
+parser.add_argument("--no_land_mask", action="store_true", default=False,
+                    help="Disable land masking. By default, ocean cells are masked out before output.")
 
 args = parser.parse_args(comin.current_get_plugin_info().args)
 
@@ -49,6 +51,13 @@ else:
     if rank == 0:
         print(f"ComIn Plugin: Setting precipitation floor to {floor} kg/m2.",
               file=sys.stderr)
+
+use_land_mask = not args.no_land_mask
+if rank == 0:
+    if use_land_mask:
+        print(f"ComIn Plugin: Land mask enabled. Ocean cells will be masked out.", file=sys.stderr)
+    else:
+        print(f"ComIn Plugin: Land mask disabled. All cells will be included.", file=sys.stderr)
 
 if args.floor_to_zero:
     floor_value = 0.0
@@ -88,11 +97,15 @@ comin.metadata_set(vd_prec_timer,
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def precipitation_constructor():
-    # access the variables 
-    global tot_prec_acc, pr_var, prec_timer
+    # access the variables
+    global tot_prec_acc, pr_var, prec_timer, land_mask
     tot_prec_acc = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("tot_prec_acc", jg), flag=comin.COMIN_FLAG_WRITE)
     pr_var = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("pr", jg), flag=comin.COMIN_FLAG_READ)
     prec_timer = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("prec_timer", jg), flag=comin.COMIN_FLAG_WRITE)
+    if use_land_mask:
+        # Land fraction (0=ocean, 1=land); build boolean land mask
+        fr_land_var = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("fr_land", jg), flag=comin.COMIN_FLAG_READ)
+        land_mask = np.squeeze(np.asarray(fr_land_var)) > 0.0
 
 
 @comin.register_callback(comin.EP_ATM_PHYSICS_AFTER)
@@ -135,6 +148,8 @@ def precipitation_floor():
     if seconds % accumulation_interval == 0:
         mask_2d = (decomp_domain_np != 0)
         tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
+        if use_land_mask:
+            tot_prec_acc_np[~land_mask] = 0.0
         floor_mask = tot_prec_acc_np < floor
         if np.any(floor_mask):
             tot_prec_acc_np[floor_mask] = floor_value
