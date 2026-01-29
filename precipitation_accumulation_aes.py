@@ -3,6 +3,9 @@ ComIn plugin for extracting 5-minutes precipitation datasets for AES physics.
 AES does not have a built-in algorithm for accumulating precipitation, so we
 do it here.
 
+This version includes support for geographic bounding box filtering, allowing
+users to specify a lat/lon box to restrict output to a specific region.
+
 NOTE: Works only for AES.
 
 Author: Felipe Navarrete (GERICS-Hereon; felipe.navarrete@hereon.de)
@@ -22,11 +25,19 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--interval", type=int, default=None,
                     help="Specify the accumulation interval in seconds.")
 parser.add_argument("--floor", type=float, default=None,
-                    help="Set a floor in kg/m2 below which the accumulated precipitation is set to zero.")
+                    help="Set a floor in kg/m2 at or below which the accumulated precipitation is masked (set to NaN or zero).")
 parser.add_argument("--floor_to_zero", action="store_true", default=False,
                     help="Set the values below the floor to zero. Default: set to NaN.")
 parser.add_argument("--no_land_mask", action="store_true", default=False,
                     help="Disable land masking. By default, ocean cells are masked out before output.")
+parser.add_argument("--lon_min", type=float, default=None,
+                    help="Western boundary of bounding box (degrees, -180 to 180).")
+parser.add_argument("--lon_max", type=float, default=None,
+                    help="Eastern boundary of bounding box (degrees, -180 to 180).")
+parser.add_argument("--lat_min", type=float, default=None,
+                    help="Southern boundary of bounding box (degrees, -90 to 90).")
+parser.add_argument("--lat_max", type=float, default=None,
+                    help="Northern boundary of bounding box (degrees, -90 to 90).")
 
 args = parser.parse_args(comin.current_get_plugin_info().args)
 
@@ -70,10 +81,78 @@ else:
         print(f"ComIn - precipitation_accumulation_aes.py: Values below {floor} kg/m2 will be set to {floor_value}.",
               file=sys.stderr)
 
+# Bounding box configuration
+bbox_args = [args.lon_min, args.lon_max, args.lat_min, args.lat_max]
+bbox_specified = [arg is not None for arg in bbox_args]
+
+if any(bbox_specified) and not all(bbox_specified):
+    if rank == 0:
+        print(f"ComIn - precipitation_accumulation_aes.py: ERROR - Bounding box requires all four corners "
+              f"(--lon_min, --lon_max, --lat_min, --lat_max). Only partial specification provided.",
+              file=sys.stderr)
+    comin.finish("precipitation_accumulation_aes.py", "Incomplete bounding box specification")
+
+use_bounding_box = all(bbox_specified)
+if use_bounding_box:
+    lon_min, lon_max, lat_min, lat_max = args.lon_min, args.lon_max, args.lat_min, args.lat_max
+    # Validate latitude range
+    if not (-90 <= lat_min <= 90 and -90 <= lat_max <= 90):
+        if rank == 0:
+            print(f"ComIn - precipitation_accumulation_aes.py: ERROR - Latitude must be between -90 and 90 degrees.",
+                  file=sys.stderr)
+        comin.finish("precipitation_accumulation_aes.py", "Invalid latitude range")
+    if lat_min >= lat_max:
+        if rank == 0:
+            print(f"ComIn - precipitation_accumulation_aes.py: ERROR - lat_min ({lat_min}) must be less than lat_max ({lat_max}).",
+                  file=sys.stderr)
+        comin.finish("precipitation_accumulation_aes.py", "Invalid latitude range: lat_min >= lat_max")
+    # Check for date line crossing (lon_min > lon_max means box crosses 180° meridian)
+    crosses_dateline = lon_min > lon_max
+    if rank == 0:
+        if crosses_dateline:
+            print(f"ComIn - precipitation_accumulation_aes.py: Bounding box enabled (crosses date line): "
+                  f"lon=[{lon_min}, 180] U [-180, {lon_max}], lat=[{lat_min}, {lat_max}]",
+                  file=sys.stderr)
+        else:
+            print(f"ComIn - precipitation_accumulation_aes.py: Bounding box enabled: "
+                  f"lon=[{lon_min}, {lon_max}], lat=[{lat_min}, {lat_max}]",
+                  file=sys.stderr)
+else:
+    lon_min = lon_max = lat_min = lat_max = None
+    crosses_dateline = False
+    if rank == 0:
+        print(f"ComIn - precipitation_accumulation_aes.py: Bounding box disabled. All cells will be included.",
+              file=sys.stderr)
+
 # domain
 jg = 1
 domain = comin.descrdata_get_domain(jg)
 decomp_domain_np = np.asarray(domain.cells.decomp_domain)
+
+# Create bounding box mask from cell coordinates
+if use_bounding_box:
+    # Cell coordinates are in radians, convert to degrees for comparison
+    clon_rad = np.asarray(domain.cells.clon)
+    clat_rad = np.asarray(domain.cells.clat)
+    clon_deg = np.rad2deg(clon_rad)
+    clat_deg = np.rad2deg(clat_rad)
+
+    # Create latitude mask (always straightforward)
+    lat_mask = (clat_deg >= lat_min) & (clat_deg <= lat_max)
+
+    # Create longitude mask (handle date line crossing)
+    if crosses_dateline:
+        # Box crosses 180° meridian: include lon >= lon_min OR lon <= lon_max
+        lon_mask = (clon_deg >= lon_min) | (clon_deg <= lon_max)
+    else:
+        # Normal box: include lon_min <= lon <= lon_max
+        lon_mask = (clon_deg >= lon_min) & (clon_deg <= lon_max)
+
+    # Combined bounding box mask (True = inside the box)
+    bbox_mask = lat_mask & lon_mask
+
+else:
+    bbox_mask = None
 
 # accumulated precipitation variable
 vd_prec_accumulated = ("tot_prec_acc", jg)
@@ -116,17 +195,23 @@ def accumulate_precipitation():
 
     # Get physics time step
     dt_phy_sec = comin.descrdata_get_timesteplength(jg)
-    
+
     # Get variables as numpy arrays
     pr_flux = np.ma.masked_array(np.squeeze(pr_var), mask=mask_2d)
     timer = np.ma.masked_array(np.squeeze(prec_timer), mask=mask_2d)
-    # Accumulated precipitation 
+    # Accumulated precipitation
     tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
-    
+
     # Check if we need to reset (where timer >= accumulation_interval)
     reset_mask = timer > accumulation_interval
     if np.any(reset_mask):
-        tot_prec_acc_np[reset_mask] = 0.0
+        # Only reset cells that are within the active region (inside bbox if enabled)
+        # This preserves NaN values for masked-out cells
+        if use_bounding_box and bbox_mask is not None:
+            active_reset_mask = reset_mask & bbox_mask
+        else:
+            active_reset_mask = reset_mask
+        tot_prec_acc_np[active_reset_mask] = 0.0
         timer[reset_mask] = 0.0
 
     timer[:] = timer[:] + dt_phy_sec
@@ -136,7 +221,12 @@ def accumulate_precipitation():
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def precipitation_floor():
     """
-    Apply the precipitation floor before writing the output
+    Apply geographic masking (bounding box, land mask) and precipitation floor before writing output.
+
+    Masking order:
+    1. Bounding box mask (if enabled) - mask cells outside the specified region
+    2. Land mask (if enabled) - mask ocean cells
+    3. Floor threshold - set values below threshold to floor_value
     """
     current_time = comin.current_get_datetime()
     current_datetime = datetime.fromisoformat(current_time)
@@ -144,13 +234,22 @@ def precipitation_floor():
 
     # Are we writing output now?
     if seconds % accumulation_interval == 0:
-        mask_2d = (decomp_domain_np != 0)
         tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
+
+        # Apply bounding box mask first (mask cells outside the box)
+        if use_bounding_box and bbox_mask is not None:
+            tot_prec_acc_np[~bbox_mask] = np.nan
+
+        # Apply land mask (mask ocean cells)
         if use_land_mask:
             sftlf_np = np.squeeze(np.asarray(sftlf_var))
             land_mask = sftlf_np > 0.0
             tot_prec_acc_np[~land_mask] = np.nan
+
+        # Apply floor threshold
         floor_mask = tot_prec_acc_np < floor
+        n_floor_mask = np.sum(floor_mask)
+
         if np.any(floor_mask):
             tot_prec_acc_np[floor_mask] = floor_value
 
