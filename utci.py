@@ -23,7 +23,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--interval", type=int, default=1,
                     help="Specify the desired time interval to compute the UTCI in hours")
 
+parser.add_argument("--no_land_mask", action="store_true", default=False,
+                    help="Disable land masking. By default, ocean cells are masked out before output.")
+
 args = parser.parse_args(comin.current_get_plugin_info().args)
+
+use_land_mask = not args.no_land_mask
+if rank == 0:
+    if use_land_mask:
+        print(f"ComIn - utci.py: Land mask enabled. Ocean cells will be masked out.", file=sys.stderr)
+    else:
+        print(f"ComIn - utci.py: Land mask disabled. All cells will be included.", file=sys.stderr)
 
 jg = 1
 domain = comin.descrdata_get_domain(jg)
@@ -354,7 +364,7 @@ def _compute_utci(t_2m, sfcwind, _mrt, wvp, dt):
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def utci_constructor():
     # access the variables
-    global utci, tas, d, cosmu0, mrt, rlds, rlus, rsds, rsus, sfcwind, hur, rsdt, daylght_frc, _first_call_done
+    global utci, tas, d, cosmu0, mrt, rlds, rlus, rsds, rsus, sfcwind, hur, rsdt, daylght_frc, _first_call_done, sftlf_var
     utci = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("utci", jg), flag=comin.COMIN_FLAG_WRITE)
     tas = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ)
     cosmu0 = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("cosmu0", jg), flag=comin.COMIN_FLAG_READ)
@@ -367,6 +377,8 @@ def utci_constructor():
     rsdt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsdt", jg), flag=comin.COMIN_FLAG_READ)
     daylght_frc = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("daylght_frc", jg), flag=comin.COMIN_FLAG_READ)
     mrt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("mrt", jg), flag=comin.COMIN_FLAG_WRITE)
+    if use_land_mask:
+        sftlf_var = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("sftlf", jg), flag=comin.COMIN_FLAG_READ)
     _first_call_done = False
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
@@ -438,6 +450,12 @@ def compute_utci():
     dt = mrt_data - tas_data
 
     utci_np[:] = _compute_utci(tas_data, sfcwind_data, mrt_data, wvp_data, dt)
+
+    if use_land_mask:
+        sftlf_np = np.squeeze(np.asarray(sftlf_var))
+        land_mask = sftlf_np > 0.0
+        utci_np[~land_mask] = np.nan
+
     utci_np[:] = np.where((-50 < tas_data) & (tas_data < 50) & \
                  (-30 < dt) & (dt < 30) & \
                  (0.5 <= sfcwind_data) & (sfcwind_data < 17.0), utci_np, np.nan)
