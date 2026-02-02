@@ -20,6 +20,8 @@ from mpi4py import MPI
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 rank = comm.Get_rank()
 
+EPSILON = 1e-6 # Tolerance for the floor
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--interval", type=int, default=None,
@@ -53,15 +55,17 @@ else:
               file=sys.stderr)
 
 if args.floor is None:
-    floor = 0.0
+    floor = 1e-5
     if rank == 0:
-        print(f"ComIn - precipitation_accumulation_aes.py: No floor is specified. Using default value of 0.0 kg/m2 (no floor).",
+        print(f"ComIn - precipitation_accumulation_aes.py: No floor is specified. Using default value of 1e-5 kg/m2.",
               file=sys.stderr)
 else:
     floor = args.floor
     if rank == 0:
         print(f"ComIn - precipitation_accumulation_aes.py: Setting precipitation floor to {floor} kg/m2.",
               file=sys.stderr)
+
+floor += EPSILON
 
 use_land_mask = not args.no_land_mask
 if rank == 0:
@@ -203,7 +207,7 @@ def accumulate_precipitation():
     tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
 
     # Check if we need to reset (where timer >= accumulation_interval)
-    reset_mask = timer > accumulation_interval
+    reset_mask = timer >= accumulation_interval
     if np.any(reset_mask):
         # Only reset cells that are within the active region (inside bbox if enabled)
         # This preserves NaN values for masked-out cells
@@ -246,10 +250,13 @@ def precipitation_floor():
             land_mask = sftlf_np > 0.0
             tot_prec_acc_np[~land_mask] = np.nan
 
-        # Apply floor threshold
-        floor_mask = tot_prec_acc_np < floor
-        n_floor_mask = np.sum(floor_mask)
+        # Clamp negative values to zero BEFORE applying floor
+        # (handles floating-point noise in precipitation flux)
+        negative_mask = tot_prec_acc_np < 0.0
+        tot_prec_acc_np[negative_mask] = 0.0
 
+        # Apply floor threshold
+        floor_mask = tot_prec_acc_np <= floor
         if np.any(floor_mask):
             tot_prec_acc_np[floor_mask] = floor_value
 
