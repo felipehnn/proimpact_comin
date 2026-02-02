@@ -188,6 +188,13 @@ def precipitation_constructor():
     if use_land_mask:
         sftlf_var = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("sftlf", jg), flag=comin.COMIN_FLAG_READ)
 
+    # Initialize timer and accumulator to zero
+    prec_timer_np = np.squeeze(np.asarray(prec_timer))
+    prec_timer_np[:] = 0.0
+
+    tot_prec_acc_np = np.squeeze(np.asarray(tot_prec_acc))
+    tot_prec_acc_np[:] = 0.0
+
 
 @comin.register_callback(comin.EP_ATM_PHYSICS_AFTER)
 def accumulate_precipitation():
