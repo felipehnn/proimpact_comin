@@ -8,6 +8,9 @@ wind speed and applies temporal averaging.
 
 NOTE: Works only for AES physics.
 
+TODO: Make the height levels a user-defined variable. For now, a few things
+      are hardcoded.
+
 Author: Felipe Navarrete (GERICS-Hereon; felipe.navarrete@hereon.de)
 """
 import sys
