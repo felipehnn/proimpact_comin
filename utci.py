@@ -4,59 +4,51 @@ Test Plugin for computing the UTCI during model runtime.
 NOTE: Works for AES physics only.
 """
 
-import sys
-import comin
-import argparse
 import numpy as np
+import comin
 from numba import jit
-from mpi4py import MPI
-from datetime import datetime
+from comin_utils import (
+    PluginContext, PluginLogger, PluginArgumentParser,
+    register_variable, LandMask, to_numpy, to_masked
+)
 
 SIGMA_SB = 5.67e-8
 _first_call_done = False
 
-comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
-rank = comm.Get_rank()
+# =============================================================================
+# Plugin Setup
+# =============================================================================
 
-parser = argparse.ArgumentParser()
+ctx = PluginContext(jg=1)
+logger = PluginLogger("utci.py", ctx)
 
+# Argument parsing
+parser = PluginArgumentParser()
+parser.add_common_args(land_mask=True)
 parser.add_argument("--interval", type=int, default=1,
                     help="Specify the desired time interval to compute the UTCI in hours")
+args = parser.parse()
 
-parser.add_argument("--no_land_mask", action="store_true", default=False,
-                    help="Disable land masking. By default, ocean cells are masked out before output.")
+# Land mask
+land_mask = LandMask(ctx, enabled=not args.no_land_mask, logger=logger)
 
-args = parser.parse_args(comin.current_get_plugin_info().args)
+# =============================================================================
+# Variable Registration
+# =============================================================================
 
-use_land_mask = not args.no_land_mask
-if rank == 0:
-    if use_land_mask:
-        print(f"ComIn - utci.py: Land mask enabled. Ocean cells will be masked out.", file=sys.stderr)
-    else:
-        print(f"ComIn - utci.py: Land mask disabled. All cells will be included.", file=sys.stderr)
+register_variable("utci", ctx.jg,
+                  standard_name="UTCI",
+                  long_name="Universal Thermal Climate Index",
+                  units="C")
 
-jg = 1
-domain = comin.descrdata_get_domain(jg)
-decomp_domain_np = np.asarray(domain.cells.decomp_domain)
+register_variable("mrt", ctx.jg,
+                  standard_name="Tmrt",
+                  long_name="Mean Radiant Temperature",
+                  units="C")
 
-# register the variables
-vd_utci = ("utci", jg)
-comin.var_request_add(vd_utci, lmodexclusive=False)
-comin.metadata_set(vd_utci,
-                      hgrid_id=1,
-                      zaxis_id=comin.COMIN_ZAXIS_2D,
-                      standard_name="UTCI",
-                      long_name="Universal Thermal Climate Index",
-                      units="C")
-
-vd_mrt = ("mrt", jg)
-comin.var_request_add(vd_mrt, lmodexclusive=False)
-comin.metadata_set(vd_mrt,
-                      hgrid_id=1,
-                      zaxis_id=comin.COMIN_ZAXIS_2D,
-                      standard_name="Tmrt",
-                      long_name="Mean Radiant Temperature",
-                      units="C")
+# =============================================================================
+# Physics Functions
+# =============================================================================
 
 def calc_sat_pres_water(temp_K):
     """
@@ -129,8 +121,8 @@ def _compute_utci(t_2m, sfcwind, _mrt, wvp, dt):
     Taken from xclim's utci function, which in turn is taken from
     http://www.utci.org/public/UTCI%20Program%20Code/UTCI_a002.f90
     by Peter Bröde.
-    
-    
+
+
     Parameters:
     -----------
     t_2m : array
@@ -361,49 +353,52 @@ def _compute_utci(t_2m, sfcwind, _mrt, wvp, dt):
 
     return utci
 
+# =============================================================================
+# Callbacks
+# =============================================================================
+
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def utci_constructor():
-    # access the variables
-    global utci, tas, d, cosmu0, mrt, rlds, rlus, rsds, rsus, sfcwind, hur, rsdt, daylght_frc, _first_call_done, sftlf_var
-    utci = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("utci", jg), flag=comin.COMIN_FLAG_WRITE)
-    tas = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ)
-    cosmu0 = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("cosmu0", jg), flag=comin.COMIN_FLAG_READ)
-    rlds = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rlds", jg), flag=comin.COMIN_FLAG_READ) 
-    rlus = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rlus", jg), flag=comin.COMIN_FLAG_READ)
-    rsds = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsds", jg), flag=comin.COMIN_FLAG_READ)
-    rsus = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsus", jg), flag=comin.COMIN_FLAG_READ)
-    sfcwind = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ)
-    hur = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("hur", jg), flag=comin.COMIN_FLAG_READ)
-    rsdt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("rsdt", jg), flag=comin.COMIN_FLAG_READ)
-    daylght_frc = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("daylght_frc", jg), flag=comin.COMIN_FLAG_READ)
-    mrt = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("mrt", jg), flag=comin.COMIN_FLAG_WRITE)
-    if use_land_mask:
-        sftlf_var = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("sftlf", jg), flag=comin.COMIN_FLAG_READ)
+    global utci_var, tas, cosmu0, mrt_var, rlds, rlus, rsds, rsus, sfcwind_var, hur, rsdt, daylght_frc, _first_call_done
+    ep = [comin.EP_ATM_WRITE_OUTPUT_BEFORE]
+    utci_var = comin.var_get(ep, ("utci", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
+    tas = comin.var_get(ep, ("tas", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    cosmu0 = comin.var_get(ep, ("cosmu0", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    rlds = comin.var_get(ep, ("rlds", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    rlus = comin.var_get(ep, ("rlus", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    rsds = comin.var_get(ep, ("rsds", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    rsus = comin.var_get(ep, ("rsus", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    sfcwind_var = comin.var_get(ep, ("sfcwind", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    hur = comin.var_get(ep, ("hur", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    rsdt = comin.var_get(ep, ("rsdt", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    daylght_frc = comin.var_get(ep, ("daylght_frc", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    mrt_var = comin.var_get(ep, ("mrt", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
+
+    land_mask.init_sftlf_var([comin.EP_ATM_PHYSICS_AFTER])
     _first_call_done = False
+
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def compute_utci():
     global _first_call_done
     if not _first_call_done:
         _first_call_done = True
-        if rank==0:
-            print(f'FHN: first call detected. Setting _first_call_done to True', file=sys.stderr)
+        logger.info("First call detected. Skipping.")
         return
-    mask_2d = (decomp_domain_np != 0)
-    cosmu0_np = np.ma.masked_array(np.squeeze(cosmu0), mask=mask_2d)
-    rlds_np = np.ma.masked_array(np.squeeze(rlds), mask=mask_2d)
-    rlus_np = np.ma.masked_array(np.squeeze(rlus), mask=mask_2d)
-    rsds_np = np.ma.masked_array(np.squeeze(rsds), mask=mask_2d)
-    rsus_np = np.ma.masked_array(np.squeeze(rsus), mask=mask_2d)
-    tas_np = np.ma.masked_array(np.squeeze(tas), mask=mask_2d)
-    hur_np = np.asarray(hur)  # hur is a 3D array; get the value closest to the surface
-    hur_np = hur_np[:, 0, :]
-    hur_np = np.ma.masked_array(np.squeeze(hur_np), mask=mask_2d)
-    sfcwind_np = np.ma.masked_array(np.squeeze(sfcwind), mask=mask_2d)
-    rsdt_np = np.ma.masked_array(np.squeeze(rsdt), mask=mask_2d)
-    daylght_frc_np = np.ma.masked_array(np.squeeze(daylght_frc), mask=mask_2d)
-    utci_np = np.squeeze(np.asarray(utci))
-    mrt_np = np.squeeze(np.asarray(mrt))
+
+    cosmu0_np = to_masked(cosmu0, ctx.mask_2d)
+    rlds_np = to_masked(rlds, ctx.mask_2d)
+    rlus_np = to_masked(rlus, ctx.mask_2d)
+    rsds_np = to_masked(rsds, ctx.mask_2d)
+    rsus_np = to_masked(rsus, ctx.mask_2d)
+    tas_np = to_masked(tas, ctx.mask_2d)
+    hur_np = np.asarray(hur)[:, 0, :]
+    hur_np = to_masked(hur_np, ctx.mask_2d)
+    sfcwind_np = to_masked(sfcwind_var, ctx.mask_2d)
+    rsdt_np = to_masked(rsdt, ctx.mask_2d)
+    daylght_frc_np = to_masked(daylght_frc, ctx.mask_2d)
+    utci_np = to_numpy(utci_var)
+    mrt_np = to_numpy(mrt_var)
 
     esat = calc_sat_pres_mixed(tas_np)
     wvp = esat * (hur_np/100)  # water vapor pressure in Pa; convert hur from 0-100 to 0-1
@@ -423,7 +418,7 @@ def compute_utci():
         rsdt_np / daylght_frc_np,
         1.0  # Dummy value, will be masked out below
     )
-    
+
     s_star = np.where(
         (cosmu0_np > 0.001) & (daylght_frc_np > 0.001),  # Only for sunlit conditions
         rsds_np / factor,
@@ -451,11 +446,14 @@ def compute_utci():
 
     utci_np[:] = _compute_utci(tas_data, sfcwind_data, mrt_data, wvp_data, dt)
 
-    if use_land_mask:
-        sftlf_np = np.squeeze(np.asarray(sftlf_var))
-        land_mask = sftlf_np > 0.0
-        utci_np[~land_mask] = np.nan
+    land_mask.apply(utci_np)
 
     utci_np[:] = np.where((-50 < tas_data) & (tas_data < 50) & \
                  (-30 < dt) & (dt < 30) & \
                  (0.5 <= sfcwind_data) & (sfcwind_data < 17.0), utci_np, np.nan)
+
+
+@comin.register_callback(comin.EP_DESTRUCTOR)
+def utci_destructor():
+    if 'utci_var' in globals() and utci_var is not None:
+        logger.finished()
