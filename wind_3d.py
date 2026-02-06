@@ -13,15 +13,19 @@ TODO: Make the height levels a user-defined variable. For now, a few things
 
 Author: Felipe Navarrete (GERICS-Hereon; felipe.navarrete@hereon.de)
 """
-import sys
 import comin
 from datetime import datetime
 import numpy as np
-from mpi4py import MPI
+from comin_utils import (
+    PluginContext, PluginLogger, register_variable, to_numpy
+)
 
+# =============================================================================
+# Plugin Setup
+# =============================================================================
 
-comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
-rank = comm.Get_rank()
+ctx = PluginContext(jg=1)
+logger = PluginLogger("wind_3d.py", ctx)
 
 # Configuration constants
 COUNT = 0  # Count to keep track for the averaging
@@ -30,33 +34,23 @@ CUTIN_VALUE = np.nan  # Value to assign when wind < CUTIN
 AVG_INTERVAL = 300  # Averaging interval in seconds
 HEIGHT_LEVELS = [50, 100, 120]  # Target heights above ground in meters
 
-# Domain
-jg = 1
-domain = comin.descrdata_get_domain(jg)
-decomp_domain_np = np.asarray(domain.cells.decomp_domain)
-nlev = domain.nlev  # Number of vertical levels
+# =============================================================================
+# Variable Registration
+# =============================================================================
 
 # Register output variables for wind speed at different heights
 for height in HEIGHT_LEVELS:
     heightstr = str(height) + "m"
-    vd_wind_comin = ("wind_" + heightstr, jg)
-    comin.var_request_add(vd_wind_comin, lmodexclusive=False)
-    comin.metadata_set(vd_wind_comin,
-                       hgrid_id=1,
-                       zaxis_id=comin.COMIN_ZAXIS_2D,
-                       standard_name='wind_speed_at_' + heightstr,
-                       long_name='Wind speed at ' + heightstr + ' above ground (interpolated from 3D fields)',
-                       units='m s-1')
+    register_variable("wind_" + heightstr, ctx.jg,
+                      standard_name='wind_speed_at_' + heightstr,
+                      long_name='Wind speed at ' + heightstr + ' above ground (interpolated from 3D fields)',
+                      units='m s-1')
 
 # Variable for tracking accumulation interval
-vd_timer = ("wind_avg_timer", jg)
-comin.var_request_add(vd_timer, lmodexclusive=False)
-comin.metadata_set(vd_timer,
-                   hgrid_id=1,
-                   zaxis_id=comin.COMIN_ZAXIS_2D,
-                   standard_name='wind_averaging_timer',
-                   long_name='Timer for wind averaging interval',
-                   units='s')
+register_variable("wind_avg_timer", ctx.jg,
+                  standard_name='wind_averaging_timer',
+                  long_name='Timer for wind averaging interval',
+                  units='s')
 
 # =============================================================================
 # Precomputed arrays (initialized in constructor, used every timestep)
@@ -66,7 +60,6 @@ PRECOMPUTED = {
     'initialized': False,
     'mask_1d': None,           # Boolean mask for halo cells (ncells,)
     'valid_mask': None,        # Inverse of mask_1d (ncells,)
-    'dt_phy_sec': None,        # Physics timestep [s]
     'topo_1d': None,           # Flattened topography (ncells,)
     'z_agl': None,             # Height above ground level (ncells, nlev)
     'ncells': None,            # Total number of cells
@@ -81,6 +74,9 @@ PRECOMPUTED = {
     'interp_120m': None,       # Dict with k_upper, k_lower, weight for 120m
 }
 
+# =============================================================================
+# Interpolation Functions
+# =============================================================================
 
 def precompute_interpolation_indices(z_agl, target_height, ncells, nlev_local):
     """
@@ -193,6 +189,9 @@ def interpolate_wind_with_precomputed(u_2d, v_2d, interp_data, valid_mask, idx, 
 
     return wind_speed
 
+# =============================================================================
+# Callbacks
+# =============================================================================
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def wind_3d_constructor():
@@ -211,35 +210,33 @@ def wind_3d_constructor():
     global u_3d, v_3d, z_mc, topography_c
     global COUNT, AVG_INTERVAL, PRECOMPUTED
 
+    ep = [comin.EP_ATM_PHYSICS_AFTER]
+
     # Output variables (wind at different heights)
-    wind_50m = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("wind_50m", jg), flag=comin.COMIN_FLAG_WRITE)
-    wind_100m = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("wind_100m", jg), flag=comin.COMIN_FLAG_WRITE)
-    wind_120m = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("wind_120m", jg), flag=comin.COMIN_FLAG_WRITE)
+    wind_50m = comin.var_get(ep, ("wind_50m", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
+    wind_100m = comin.var_get(ep, ("wind_100m", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
+    wind_120m = comin.var_get(ep, ("wind_120m", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
 
     # Timer for averaging
-    wind_avg_timer = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("wind_avg_timer", jg), flag=comin.COMIN_FLAG_WRITE)
+    wind_avg_timer = comin.var_get(ep, ("wind_avg_timer", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
 
     # Input variables from ICON (3D wind components and geometry)
-    u_3d = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("u", jg), flag=comin.COMIN_FLAG_READ)
-    v_3d = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("v", jg), flag=comin.COMIN_FLAG_READ)
-    z_mc = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("z_mc", jg), flag=comin.COMIN_FLAG_READ)
-    topography_c = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("topography_c", jg), flag=comin.COMIN_FLAG_READ)
+    u_3d = comin.var_get(ep, ("u", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    v_3d = comin.var_get(ep, ("v", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    z_mc = comin.var_get(ep, ("z_mc", ctx.jg), flag=comin.COMIN_FLAG_READ)
+    topography_c = comin.var_get(ep, ("topography_c", ctx.jg), flag=comin.COMIN_FLAG_READ)
 
     # =========================================================================
     # PRECOMPUTE CONSTANT ARRAYS
     # =========================================================================
 
     # 1. Mask arrays (constant - based on domain decomposition)
-    mask_2d = (decomp_domain_np != 0)
-    PRECOMPUTED['mask_1d'] = mask_2d.flatten()
+    PRECOMPUTED['mask_1d'] = ctx.mask_2d.flatten()
     PRECOMPUTED['valid_mask'] = ~PRECOMPUTED['mask_1d']
 
-    # 2. Physics timestep (constant for the simulation)
-    PRECOMPUTED['dt_phy_sec'] = comin.descrdata_get_timesteplength(jg)
-
-    # 3. Get geometry arrays and determine shapes
-    z_mc_np = np.squeeze(np.asarray(z_mc))
-    topo_np = np.squeeze(np.asarray(topography_c))
+    # 2. Get geometry arrays and determine shapes
+    z_mc_np = to_numpy(z_mc)
+    topo_np = to_numpy(topography_c)
 
     if z_mc_np.ndim == 3:
         nproma, nlev_local, nblks = z_mc_np.shape
@@ -263,13 +260,13 @@ def wind_3d_constructor():
 
     PRECOMPUTED['topo_1d'] = topo_1d
 
-    # 4. Compute height above ground level (constant - model levels don't move)
+    # 3. Compute height above ground level (constant - model levels don't move)
     PRECOMPUTED['z_agl'] = z_mc_2d - topo_1d[:, np.newaxis]
 
-    # 5. Index array for advanced indexing
+    # 4. Index array for advanced indexing
     PRECOMPUTED['idx'] = np.arange(PRECOMPUTED['ncells'])
 
-    # 6. Precompute interpolation indices and weights for each target height
+    # 5. Precompute interpolation indices and weights for each target height
     ncells = PRECOMPUTED['ncells']
     nlev_local = PRECOMPUTED['nlev_local']
     z_agl = PRECOMPUTED['z_agl']
@@ -280,11 +277,9 @@ def wind_3d_constructor():
 
     PRECOMPUTED['initialized'] = True
 
-    if rank == 0:
-        print(f"ComIn - wind_3d.py: Constructor completed. nlev={nlev}, heights={HEIGHT_LEVELS}",
-              file=sys.stderr)
-        print(f"ComIn - wind_3d.py: Precomputed arrays initialized. ncells={ncells}, "
-              f"is_3d={PRECOMPUTED['is_3d']}", file=sys.stderr)
+    logger.info(f"Constructor completed. nlev={ctx.nlev}, heights={HEIGHT_LEVELS}")
+    logger.info(f"Precomputed arrays initialized. ncells={ncells}, "
+                f"is_3d={PRECOMPUTED['is_3d']}")
 
 
 @comin.register_callback(comin.EP_ATM_PHYSICS_AFTER)
@@ -298,9 +293,7 @@ def accumulate_wind():
     global COUNT
 
     # Retrieve precomputed constants
-    mask_1d = PRECOMPUTED['mask_1d']
     valid_mask = PRECOMPUTED['valid_mask']
-    dt_phy_sec = PRECOMPUTED['dt_phy_sec']
     idx = PRECOMPUTED['idx']
     ncells = PRECOMPUTED['ncells']
     is_3d = PRECOMPUTED['is_3d']
@@ -311,13 +304,13 @@ def accumulate_wind():
     timer = np.squeeze(timer_raw).flatten()
 
     # Get output wind arrays - flatten to 1D
-    wind_50m_np = np.squeeze(np.asarray(wind_50m)).flatten()
-    wind_100m_np = np.squeeze(np.asarray(wind_100m)).flatten()
-    wind_120m_np = np.squeeze(np.asarray(wind_120m)).flatten()
+    wind_50m_np = to_numpy(wind_50m).flatten()
+    wind_100m_np = to_numpy(wind_100m).flatten()
+    wind_120m_np = to_numpy(wind_120m).flatten()
 
     # Get wind components (these change every timestep)
-    u_np = np.squeeze(np.asarray(u_3d))
-    v_np = np.squeeze(np.asarray(v_3d))
+    u_np = to_numpy(u_3d)
+    v_np = to_numpy(v_3d)
 
     # Reshape wind arrays to (ncells, nlev)
     if is_3d:
@@ -339,7 +332,7 @@ def accumulate_wind():
         COUNT = 0
 
     # Update timer
-    timer[:] = timer[:] + dt_phy_sec
+    timer[:] = timer[:] + ctx.dt
     timer_raw.flat[:] = timer
 
     # Interpolate wind using precomputed indices and weights
@@ -409,5 +402,4 @@ def wind_3d_destructor():
     """
     Cleanup callback when simulation ends.
     """
-    if rank == 0:
-        print(f"ComIn - wind_3d.py: Plugin finished.", file=sys.stderr)
+    logger.finished()
