@@ -14,6 +14,7 @@ Possible arguments are:
 3. `--floor_to_zero`: Parsed adding zeros instead of NaNs (not recommended to use because NaNs save more disk space).
 4. `--no_land_mask`: Parsed if the accumulated precipitation on ocean cells is stored; otherwised they are masked out and replaced with NaNs.
 5. `--lon_min <float> --lon_max <float> --lat_min <float> --lat_max <float>`: Define a coordinate box (in degrees; [-180, 180] for lon and [-90, 90] for lat). Values that fall inside this box are stored and the rest is replaced with NaN.
+6. `--no_temperature`: Used when saving `tas` where `tot_prec_acc` is not nan is not desired.
 
 It is highly recommended to set a value for `--floor` (1e-5 by default). This
 value is in units of kg/m2 and specifies a lower value below which the
