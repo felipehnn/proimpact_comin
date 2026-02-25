@@ -35,6 +35,8 @@ parser.add_argument("--floor", type=float, default=None,
                     help="Set a floor in kg/m2 at or below which the accumulated precipitation is masked.")
 parser.add_argument("--floor_to_zero", action="store_true", default=False,
                     help="Set the values below the floor to zero. Default: set to NaN.")
+parser.add_argument("--no_temperature", action="store_true", default=False,
+                    help="Disable output of near-surface temperature at precipitation locations.")
 parser.add_argument("--lon_min", type=float, default=None,
                     help="Western boundary of bounding box (degrees, -180 to 180).")
 parser.add_argument("--lon_max", type=float, default=None,
@@ -45,6 +47,13 @@ parser.add_argument("--lat_max", type=float, default=None,
                     help="Northern boundary of bounding box (degrees, -90 to 90).")
 
 args = parser.parse()
+
+# Temperature output
+store_temperature = not args.no_temperature
+if store_temperature:
+    logger.info("Temperature output enabled. Use --no_temperature to disable.")
+else:
+    logger.info("Temperature output disabled.")
 
 # Accumulation interval
 accumulation_interval = get_interval_with_default(
@@ -127,13 +136,19 @@ register_variable("prec_timer", ctx.jg,
                   long_name='Timer for precipitation accumulation interval',
                   units='s')
 
+if store_temperature:
+    register_variable("tas_prec", ctx.jg,
+                      standard_name='air_temperature_at_precipitation',
+                      long_name='Near-surface air temperature at precipitation locations',
+                      units='K')
+
 # =============================================================================
 # Callbacks
 # =============================================================================
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def precipitation_constructor():
-    global tot_prec_acc, pr_var, prec_timer
+    global tot_prec_acc, pr_var, prec_timer, tas_var, tas_prec
     tot_prec_acc = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("tot_prec_acc", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
     pr_var = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("pr", ctx.jg), flag=comin.COMIN_FLAG_READ)
     prec_timer = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("prec_timer", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
@@ -144,6 +159,13 @@ def precipitation_constructor():
     # Initialize timer and accumulator to zero
     to_numpy(prec_timer)[:] = 0.0
     to_numpy(tot_prec_acc)[:] = 0.0
+
+    if store_temperature:
+        tas_var  = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("tas", ctx.jg), flag=comin.COMIN_FLAG_READ)
+        tas_prec = comin.var_get([comin.EP_ATM_PHYSICS_AFTER], ("tas_prec", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
+        to_numpy(tas_prec)[:] = np.nan
+    else:
+        tas_var = tas_prec = None
 
 
 @comin.register_callback(comin.EP_ATM_PHYSICS_AFTER)
@@ -203,6 +225,12 @@ def precipitation_floor():
         floor_mask_arr = tot_prec_acc_np <= floor
         if np.any(floor_mask_arr):
             tot_prec_acc_np[floor_mask_arr] = floor_value
+
+        # Store temperature where precipitation is not masked
+        if store_temperature:
+            tas_prec_np = to_numpy(tas_prec)
+            tas_prec_np[:] = to_numpy(tas_var)[:]
+            tas_prec_np[np.isnan(tot_prec_acc_np)] = np.nan
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
