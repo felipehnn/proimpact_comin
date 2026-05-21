@@ -4,4 +4,4 @@ comin_plugin:
   physics: AES
   parameters:
     avg_interval: 300  # Averaging window [seconds]
-    cut_in: 0.0        # Wind speed below this threshold is set to NaN [m/s]
+    cut_in: 15.0        # Wind speed below this threshold is set to NaN [m/s]
