@@ -261,8 +261,9 @@ class PluginConfig:
     """
     Config loader for ComIn plugins using YAML configuration files.
 
-    The config file path is read from comin.current_get_plugin_info().args[0].
-    The YAML file must follow this structure::
+    The config file is resolved automatically as ``config/<plugin_name>.yaml``
+    relative to the directory containing ``comin_utils.py``. No plugin arguments
+    are required. The YAML file must follow this structure::
 
         comin_plugin:
           name: <plugin_name>
@@ -276,7 +277,8 @@ class PluginConfig:
     Parameters
     ----------
     plugin_name : str
-        Expected plugin name — validated against the file's ``name`` field.
+        Expected plugin name — used to locate the file and validated against
+        the file's ``name`` field.
     logger : PluginLogger, optional
         Logger for status messages.
 
@@ -293,6 +295,7 @@ class PluginConfig:
         self._parameters = self._read()
 
     def _read(self):
+        import os
         try:
             import yaml
         except ImportError:
@@ -301,14 +304,9 @@ class PluginConfig:
                 "Install with: pip install pyyaml"
             )
 
-        plugin_args = comin.current_get_plugin_info().args
-        if not plugin_args:
-            raise RuntimeError(
-                f"[{self.plugin_name}] No config file path provided. "
-                "Pass the YAML config file path as the plugin argument."
-            )
-
-        config_path = plugin_args[0]
+        config_path = os.path.join(
+            os.path.dirname(__file__), "config", f"{self.plugin_name}.yaml"
+        )
         try:
             with open(config_path, "r") as f:
                 data = yaml.safe_load(f)
