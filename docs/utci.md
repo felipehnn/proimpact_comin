@@ -12,9 +12,10 @@ which by default applies a land masking, leaving out ocean cells in the dataset.
 
 Possible argument:
 
-- `--no_land_mask`: Parsed if the one wants to keep the UTCI on land cells. 
+- `no_land_mask`: Parsed if the one wants to keep the UTCI on land cells. 
+- `interval <int>`: Frequency in hours to write the output.
 
-The usage of `--no_land_mask` is discouraged unless strictly neccesary.
+The usage of `no_land_mask` is discouraged unless strictly neccesary.
 Keeping it saves more than half of disk space: the dataset goes up to 3.7M from
 1.5M if the argument is parsed in a test done for on the R2B4 grid.
 
