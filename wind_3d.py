@@ -17,7 +17,7 @@ import comin
 from datetime import datetime
 import numpy as np
 from comin_utils import (
-    PluginContext, PluginLogger, register_variable, to_numpy
+    PluginContext, PluginLogger, PluginConfig, register_variable, to_numpy
 )
 
 # =============================================================================
@@ -27,11 +27,17 @@ from comin_utils import (
 ctx = PluginContext(jg=1)
 logger = PluginLogger("wind_3d.py", ctx)
 
-# Configuration constants
-COUNT = 0  # Count to keep track for the averaging
-CUTIN = 0.0  # Cut-in speed in m/s
-CUTIN_VALUE = np.nan  # Value to assign when wind < CUTIN
-AVG_INTERVAL = 300  # Averaging interval in seconds
+# Config loading
+config = PluginConfig("wind_3d", logger=logger)
+_args = config.load(defaults={
+    "avg_interval": 300,
+    "cut_in": 0.0,
+})
+
+COUNT = 0
+CUTIN = _args.cut_in
+CUTIN_VALUE = np.nan
+AVG_INTERVAL = _args.avg_interval
 HEIGHT_LEVELS = [50, 100, 120]  # Target heights above ground in meters
 
 # =============================================================================

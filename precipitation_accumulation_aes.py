@@ -14,9 +14,8 @@ import comin
 import numpy as np
 from datetime import datetime
 from comin_utils import (
-    PluginContext, PluginLogger, PluginArgumentParser,
-    register_variable, LandMask, to_numpy, to_masked,
-    get_interval_with_default
+    PluginContext, PluginLogger, PluginConfig,
+    register_variable, LandMask, to_numpy, to_masked
 )
 
 # =============================================================================
@@ -28,46 +27,34 @@ logger = PluginLogger("precipitation_accumulation_aes.py", ctx)
 
 EPSILON = 1e-6  # Tolerance for the floor
 
-# Argument parsing
-parser = PluginArgumentParser()
-parser.add_common_args(interval=True, land_mask=True)
-parser.add_argument("--floor", type=float, default=None,
-                    help="Set a floor in kg/m2 at or below which the accumulated precipitation is masked.")
-parser.add_argument("--floor_to_zero", action="store_true", default=False,
-                    help="Set the values below the floor to zero. Default: set to NaN.")
-parser.add_argument("--no_temperature", action="store_true", default=False,
-                    help="Disable output of near-surface temperature at precipitation locations.")
-parser.add_argument("--lon_min", type=float, default=None,
-                    help="Western boundary of bounding box (degrees, -180 to 180).")
-parser.add_argument("--lon_max", type=float, default=None,
-                    help="Eastern boundary of bounding box (degrees, -180 to 180).")
-parser.add_argument("--lat_min", type=float, default=None,
-                    help="Southern boundary of bounding box (degrees, -90 to 90).")
-parser.add_argument("--lat_max", type=float, default=None,
-                    help="Northern boundary of bounding box (degrees, -90 to 90).")
-
-args = parser.parse()
+# Config loading
+config = PluginConfig("precipitation_accumulation_aes", logger=logger)
+args = config.load(defaults={
+    "interval": 300,
+    "floor": 1e-5,
+    "floor_to_zero": False,
+    "no_land_mask": False,
+    "no_temperature": False,
+    "lon_min": None,
+    "lon_max": None,
+    "lat_min": None,
+    "lat_max": None,
+})
 
 # Temperature output
 store_temperature = not args.no_temperature
 if store_temperature:
-    logger.info("Temperature output enabled. Use --no_temperature to disable.")
+    logger.info("Temperature output enabled.")
 else:
     logger.info("Temperature output disabled.")
 
 # Accumulation interval
-accumulation_interval = get_interval_with_default(
-    args.interval, default=300, logger=logger, param_name="precip interval"
-)
+accumulation_interval = args.interval
+logger.info(f"Accumulation interval: {accumulation_interval} seconds.")
 
 # Floor configuration
-if args.floor is None:
-    floor = 1e-5
-    logger.info(f"No floor specified. Using default value of {floor} kg/m2.")
-else:
-    floor = args.floor
-    logger.info(f"Setting precipitation floor to {floor} kg/m2.")
-
+floor = args.floor
+logger.info(f"Precipitation floor: {floor} kg/m2.")
 floor += EPSILON
 
 # Floor value (NaN or zero)

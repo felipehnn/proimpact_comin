@@ -8,7 +8,7 @@ import numpy as np
 import comin
 from numba import jit
 from comin_utils import (
-    PluginContext, PluginLogger, PluginArgumentParser,
+    PluginContext, PluginLogger, PluginConfig,
     register_variable, LandMask, to_numpy, to_masked
 )
 
@@ -22,12 +22,12 @@ _first_call_done = False
 ctx = PluginContext(jg=1)
 logger = PluginLogger("utci.py", ctx)
 
-# Argument parsing
-parser = PluginArgumentParser()
-parser.add_common_args(land_mask=True)
-parser.add_argument("--interval", type=int, default=1,
-                    help="Specify the desired time interval to compute the UTCI in hours")
-args = parser.parse()
+# Config loading
+config = PluginConfig("utci", logger=logger)
+args = config.load(defaults={
+    "interval": 1,
+    "no_land_mask": False,
+})
 
 # Land mask
 land_mask = LandMask(ctx, enabled=not args.no_land_mask, logger=logger)

@@ -12,7 +12,7 @@ Author: Felipe Navarrete (GERICS-Hereon; felipe.navarrete@hereon.de)
 """
 
 import sys
-import argparse
+from types import SimpleNamespace
 import numpy as np
 import comin
 from mpi4py import MPI
@@ -257,55 +257,104 @@ class LandMask:
             array[~self.mask] = fill_value
 
 
-class PluginArgumentParser:
+class PluginConfig:
     """
-    Argument parser wrapper with common ComIn plugin arguments.
+    Config loader for ComIn plugins using YAML configuration files.
+
+    The config file path is read from comin.current_get_plugin_info().args[0].
+    The YAML file must follow this structure::
+
+        comin_plugin:
+          name: <plugin_name>
+          version: 1
+          physics: AES
+          parameters:
+            <key>: <value>
+
+    Parameters in the file override the defaults supplied to load().
+
+    Parameters
+    ----------
+    plugin_name : str
+        Expected plugin name — validated against the file's ``name`` field.
+    logger : PluginLogger, optional
+        Logger for status messages.
 
     Example
     -------
-    >>> parser = PluginArgumentParser()
-    >>> parser.add_common_args(interval=True, land_mask=True)
-    >>> parser.add_argument("--floor", type=float, default=1e-5)
-    >>> args = parser.parse()
+    >>> config = PluginConfig("utci", logger=logger)
+    >>> args = config.load(defaults={"no_land_mask": False, "interval": 1})
+    >>> print(args.interval)
     """
 
-    def __init__(self):
-        self._parser = argparse.ArgumentParser()
-        self._has_interval = False
-        self._has_land_mask = False
+    def __init__(self, plugin_name, logger=None):
+        self.plugin_name = plugin_name
+        self.logger = logger
+        self._parameters = self._read()
 
-    def add_argument(self, *args, **kwargs):
-        """Add a custom argument (passes through to argparse)."""
-        self._parser.add_argument(*args, **kwargs)
+    def _read(self):
+        try:
+            import yaml
+        except ImportError:
+            raise RuntimeError(
+                f"[{self.plugin_name}] pyyaml is required for config file loading. "
+                "Install with: pip install pyyaml"
+            )
 
-    def add_common_args(self, interval=False, land_mask=False):
+        plugin_args = comin.current_get_plugin_info().args
+        if not plugin_args:
+            raise RuntimeError(
+                f"[{self.plugin_name}] No config file path provided. "
+                "Pass the YAML config file path as the plugin argument."
+            )
+
+        config_path = plugin_args[0]
+        try:
+            with open(config_path, "r") as f:
+                data = yaml.safe_load(f)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"[{self.plugin_name}] Config file not found: {config_path}"
+            )
+        except yaml.YAMLError as exc:
+            raise RuntimeError(
+                f"[{self.plugin_name}] Failed to parse config file {config_path}: {exc}"
+            )
+
+        plugin_section = data.get("comin_plugin", {})
+
+        file_name = plugin_section.get("name")
+        if file_name and file_name != self.plugin_name:
+            raise RuntimeError(
+                f"Config file declares plugin '{file_name}' "
+                f"but '{self.plugin_name}' was expected."
+            )
+
+        if self.logger:
+            self.logger.info(f"Loaded config from {config_path}")
+
+        return plugin_section.get("parameters", {})
+
+    def load(self, defaults=None):
         """
-        Add common plugin arguments.
+        Return plugin parameters merged with defaults as a SimpleNamespace.
+
+        Values in the config file override the defaults. Keys present only
+        in defaults are kept as-is.
 
         Parameters
         ----------
-        interval : bool
-            Add --interval argument (accumulation/computation interval)
-        land_mask : bool
-            Add --no_land_mask argument
+        defaults : dict, optional
+            Default values for parameters not specified in the config file.
+
+        Returns
+        -------
+        SimpleNamespace
+            One attribute per parameter.
         """
-        if interval:
-            self._parser.add_argument(
-                "--interval", type=int, default=None,
-                help="Specify the time interval in seconds."
-            )
-            self._has_interval = True
-
-        if land_mask:
-            self._parser.add_argument(
-                "--no_land_mask", action="store_true", default=False,
-                help="Disable land masking. By default, ocean cells are masked out."
-            )
-            self._has_land_mask = True
-
-    def parse(self):
-        """Parse arguments from comin plugin info."""
-        return self._parser.parse_args(comin.current_get_plugin_info().args)
+        result = dict(defaults or {})
+        result.update(self._parameters)
+        return SimpleNamespace(**result)
 
 
 # =============================================================================
@@ -348,31 +397,3 @@ def to_masked(var, mask):
     return np.ma.masked_array(np.squeeze(var), mask=mask)
 
 
-def get_interval_with_default(args_interval, default, logger=None, param_name="interval"):
-    """
-    Get interval value with logging for default case.
-
-    Parameters
-    ----------
-    args_interval : int or None
-        Value from argument parser
-    default : int
-        Default value if args_interval is None
-    logger : PluginLogger, optional
-        Logger for messages
-    param_name : str
-        Name of the parameter for logging
-
-    Returns
-    -------
-    int
-        The interval value
-    """
-    if args_interval is None:
-        if logger:
-            logger.info(f"No {param_name} specified. Using default value of {default} seconds.")
-        return default
-    else:
-        if logger:
-            logger.info(f"{param_name.capitalize()} set to {args_interval} seconds.")
-        return args_interval

@@ -1,0 +1,7 @@
+comin_plugin:
+  name: utci
+  version: 1
+  physics: AES
+  parameters:
+    interval: 1          # Computation interval [hours]
+    no_land_mask: false  # If true, ocean cells are kept (land masking disabled)
