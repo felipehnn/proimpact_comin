@@ -204,40 +204,41 @@ class LandMask:
     >>> land_mask.apply(output_array)
     """
 
-    def __init__(self, ctx, enabled=True, logger=None):
+    def __init__(self, ctx, enabled=True, land_var="sftlf", logger=None):
         self.ctx = ctx
         self.enabled = enabled
+        self.land_var = land_var
         self.logger = logger
-        self._sftlf_var = None
+        self._land_var = None
         self._mask = None
 
         if logger:
             if enabled:
-                logger.info("Land mask enabled. Ocean cells will be masked out.")
+                logger.info(f"Land mask enabled (variable: {land_var}). Ocean cells will be masked out.")
             else:
                 logger.info("Land mask disabled. All cells will be included.")
 
     def init_sftlf_var(self, entry_points):
         """
-        Initialize the sftlf variable reference.
+        Initialize the land mask variable reference.
 
         Call this in the constructor callback.
 
         Parameters
         ----------
         entry_points : list
-            List of entry points where sftlf is needed
+            List of entry points where the land mask variable is needed
         """
         if self.enabled:
-            self._sftlf_var = comin.var_get(entry_points, ("sftlf", self.ctx.jg),
-                                            flag=comin.COMIN_FLAG_READ)
+            self._land_var = comin.var_get(entry_points, (self.land_var, self.ctx.jg),
+                                           flag=comin.COMIN_FLAG_READ)
 
     @property
     def mask(self):
         """Boolean mask where True = land cells."""
-        if self._mask is None and self._sftlf_var is not None:
-            sftlf_np = np.squeeze(np.asarray(self._sftlf_var))
-            self._mask = sftlf_np > 0.0
+        if self._mask is None and self._land_var is not None:
+            land_np = np.squeeze(np.asarray(self._land_var))
+            self._mask = land_np > 0.0
         return self._mask
 
     def apply(self, array, fill_value=np.nan):

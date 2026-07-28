@@ -64,7 +64,7 @@ floor_value = 0.0 if args.floor_to_zero else np.nan
 logger.info(f"Values below {floor} kg/m2 will be set to {floor_value}.")
 
 # Land mask
-land_mask = LandMask(ctx, enabled=not args.no_land_mask, logger=logger)
+land_mask = LandMask(ctx, enabled=not args.no_land_mask, land_var="fr_land", logger=logger)
 
 # =============================================================================
 # Bounding Box Configuration
