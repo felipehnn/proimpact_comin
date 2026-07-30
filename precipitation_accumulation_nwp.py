@@ -163,7 +163,7 @@ def get_total_prec():
         previous_prec_np = to_masked(previous_prec, ctx.mask_2d)
         tot_prec_comin_np = to_numpy(tot_prec_comin)
 
-        tot_prec_comin_np[:] = tot_prec_comin_np - previous_prec_np
+        tot_prec_comin_np[:] = tot_prec_np - previous_prec_np
 
         # Apply bounding box mask first (mask cells outside the box)
         if use_bounding_box and bbox_mask is not None:
