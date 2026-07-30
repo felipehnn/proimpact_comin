@@ -25,12 +25,12 @@ from comin_utils import (
 # =============================================================================
 
 ctx = PluginContext(jg=1)
-logger = PluginLogger("precipitation_accumulation_comin", ctx)
+logger = PluginLogger("precipitation_accumulation_nwp", ctx)
 
 EPSILON = 1e-6  # Tolerance for the floor
 
 # Config loading
-config = PluginConfig("precip_accumulation_comin", logger=logger)
+config = PluginConfig("precipitation_accumulation_nwp", logger=logger)
 args = config.load(defaults={
     "interval": 300,
     "floor": 1e-5,
@@ -76,7 +76,7 @@ bbox_specified = [arg is not None for arg in bbox_args]
 if any(bbox_specified) and not all(bbox_specified):
     logger.error("Bounding box requires all four corners "
                  "(--lon_min, --lon_max, --lat_min, --lat_max). Only partial specification provided.")
-    comin.finish("precip_accumulation_comin", "Incomplete bounding box specification")
+    comin.finish("precipitation_accumulation_nwp", "Incomplete bounding box specification")
 
 use_bounding_box = all(bbox_specified)
 if use_bounding_box:
@@ -84,10 +84,10 @@ if use_bounding_box:
 
     if not (-90 <= lat_min <= 90 and -90 <= lat_max <= 90):
         logger.error("Latitude must be between -90 and 90 degrees.")
-        comin.finish("precip_accumulation_comin", "Invalid latitude range")
+        comin.finish("precipitation_accumulation_nwp", "Invalid latitude range")
     if lat_min >= lat_max:
         logger.error(f"lat_min ({lat_min}) must be less than lat_max ({lat_max}).")
-        comin.finish("precip_accumulation_comin", "Invalid latitude range: lat_min >= lat_max")
+        comin.finish("precipitation_accumulation_nwp", "Invalid latitude range: lat_min >= lat_max")
 
     crosses_dateline = lon_min > lon_max
     if crosses_dateline:
@@ -161,9 +161,9 @@ def get_total_prec():
     if seconds % accumulation_interval == 0:
         tot_prec_np = to_masked(tot_prec, ctx.mask_2d)
         previous_prec_np = to_masked(previous_prec, ctx.mask_2d)
-        tot_prec_comin = to_numpy(tot_prec_comin)
+        tot_prec_comin_np = to_numpy(tot_prec_comin)
 
-        tot_prec_comin_np[:] = tot_prec_np - previous_prec_np
+        tot_prec_comin_np[:] = tot_prec_comin_np - previous_prec_np
 
         # Apply bounding box mask first (mask cells outside the box)
         if use_bounding_box and bbox_mask is not None:
