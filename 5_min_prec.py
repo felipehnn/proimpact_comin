@@ -1,5 +1,5 @@
 """
-ComIn plugin for extracting 5-minutes precipitation datasets for NWP physics.
+ComIn plugin for extracting precipitation datasets for NWP physics.
 
 NWP physics has a built-in algorithm for accumulating precipitation, so the
 plugin only needs to compute the difference between successive tot_prec values.
@@ -25,12 +25,12 @@ from comin_utils import (
 # =============================================================================
 
 ctx = PluginContext(jg=1)
-logger = PluginLogger("5_min_prec", ctx)
+logger = PluginLogger("precip_accumulation_comin", ctx)
 
 EPSILON = 1e-6  # Tolerance for the floor
 
 # Config loading
-config = PluginConfig("5_min_prec", logger=logger)
+config = PluginConfig("precip_accumulation_comin", logger=logger)
 args = config.load(defaults={
     "interval": 300,
     "floor": 1e-5,
@@ -76,7 +76,7 @@ bbox_specified = [arg is not None for arg in bbox_args]
 if any(bbox_specified) and not all(bbox_specified):
     logger.error("Bounding box requires all four corners "
                  "(--lon_min, --lon_max, --lat_min, --lat_max). Only partial specification provided.")
-    comin.finish("5_min_prec", "Incomplete bounding box specification")
+    comin.finish("precip_accumulation_comin", "Incomplete bounding box specification")
 
 use_bounding_box = all(bbox_specified)
 if use_bounding_box:
@@ -84,10 +84,10 @@ if use_bounding_box:
 
     if not (-90 <= lat_min <= 90 and -90 <= lat_max <= 90):
         logger.error("Latitude must be between -90 and 90 degrees.")
-        comin.finish("5_min_prec", "Invalid latitude range")
+        comin.finish("precip_accumulation_comin", "Invalid latitude range")
     if lat_min >= lat_max:
         logger.error(f"lat_min ({lat_min}) must be less than lat_max ({lat_max}).")
-        comin.finish("5_min_prec", "Invalid latitude range: lat_min >= lat_max")
+        comin.finish("precip_accumulation_comin", "Invalid latitude range: lat_min >= lat_max")
 
     crosses_dateline = lon_min > lon_max
     if crosses_dateline:
@@ -112,9 +112,9 @@ else:
 # Variable Registration
 # =============================================================================
 
-register_variable("tot_prec_5min", ctx.jg,
-                  standard_name='5_minute_precipitation',
-                  long_name='Precipitation accumulated over 5 minutes',
+register_variable("tot_prec_comin", ctx.jg,
+                  standard_name='tot_prec_comin',
+                  long_name='Precipitation accumulated with ComIn plugin',
                   units='kg m-2')
 
 register_variable("previous_prec", ctx.jg,
@@ -134,8 +134,8 @@ if store_temperature:
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def prec_constructor():
-    global tot_prec_5min, tot_prec, previous_prec, tas_var, tas_prec
-    tot_prec_5min = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tot_prec_5min", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
+    global tot_prec_comin, tot_prec, previous_prec, tas_var, tas_prec
+    tot_prec_comin = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tot_prec_comin", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
     tot_prec      = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tot_prec", ctx.jg),       flag=comin.COMIN_FLAG_READ)
     previous_prec = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_AFTER],  ("previous_prec", ctx.jg),  flag=comin.COMIN_FLAG_WRITE)
 
@@ -161,31 +161,31 @@ def get_total_prec():
     if seconds % accumulation_interval == 0:
         tot_prec_np = to_masked(tot_prec, ctx.mask_2d)
         previous_prec_np = to_masked(previous_prec, ctx.mask_2d)
-        tot_prec_5min_np = to_numpy(tot_prec_5min)
+        tot_prec_comin = to_numpy(tot_prec_comin)
 
-        tot_prec_5min_np[:] = tot_prec_np - previous_prec_np
+        tot_prec_comin_np[:] = tot_prec_np - previous_prec_np
 
         # Apply bounding box mask first (mask cells outside the box)
         if use_bounding_box and bbox_mask is not None:
-            tot_prec_5min_np[~bbox_mask] = np.nan
+            tot_prec_comin_np[~bbox_mask] = np.nan
 
         # Apply land mask (mask ocean cells)
-        land_mask.apply(tot_prec_5min_np)
+        land_mask.apply(tot_prec_comin_np)
 
         # Clamp negative values to zero BEFORE applying floor
-        negative_mask = tot_prec_5min_np < 0.0
-        tot_prec_5min_np[negative_mask] = 0.0
+        negative_mask = tot_prec_comin_np < 0.0
+        tot_prec_comin_np[negative_mask] = 0.0
 
         # Apply floor threshold
-        floor_mask_arr = tot_prec_5min_np <= floor
+        floor_mask_arr = tot_prec_comin_np <= floor
         if np.any(floor_mask_arr):
-            tot_prec_5min_np[floor_mask_arr] = floor_value
+            tot_prec_comin_np[floor_mask_arr] = floor_value
 
         # Store temperature where precipitation is not masked
         if store_temperature:
             tas_prec_np = to_numpy(tas_prec)
             tas_prec_np[:] = to_numpy(tas_var)[:]
-            tas_prec_np[np.isnan(tot_prec_5min_np)] = np.nan
+            tas_prec_np[np.isnan(tot_prec_comin_np)] = np.nan
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_AFTER)
@@ -203,5 +203,5 @@ def prev_prec_callback():
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
 def prec_destructor():
-    if 'tot_prec_5min' in globals() and tot_prec_5min is not None:
+    if 'tot_prec_comin' in globals() and tot_prec_comin is not None:
         logger.finished()
