@@ -142,7 +142,7 @@ def prec_constructor():
     land_mask.init_sftlf_var([comin.EP_ATM_WRITE_OUTPUT_BEFORE])
 
     if store_temperature:
-        tas_var  = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", ctx.jg), flag=comin.COMIN_FLAG_READ)
+        tas_var  = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("t_2m", ctx.jg), flag=comin.COMIN_FLAG_READ)
         tas_prec = comin.var_get([comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas_prec", ctx.jg), flag=comin.COMIN_FLAG_WRITE)
     else:
         tas_var = tas_prec = None
