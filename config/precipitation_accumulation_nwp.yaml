@@ -1,5 +1,5 @@
 comin_plugin:
-  name: 5_min_prec
+  name: precipitation_accumulation_nwp
   version: 1
   physics: NWP
   parameters:
