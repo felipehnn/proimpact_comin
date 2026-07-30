@@ -25,7 +25,7 @@ from comin_utils import (
 # =============================================================================
 
 ctx = PluginContext(jg=1)
-logger = PluginLogger("precip_accumulation_comin", ctx)
+logger = PluginLogger("precipitation_accumulation_comin", ctx)
 
 EPSILON = 1e-6  # Tolerance for the floor
 
