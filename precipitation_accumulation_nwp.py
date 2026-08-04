@@ -163,7 +163,12 @@ def get_total_prec():
         previous_prec_np = to_masked(previous_prec, ctx.mask_2d)
         tot_prec_comin_np = to_numpy(tot_prec_comin)
 
-        tot_prec_comin_np[:] = tot_prec_np - previous_prec_np
+        # ICON resets its internal accummulator every precip_interval.
+        # Here we detect the reset, which happens when tot_prec goes
+        # backwards relative to the previous output.
+        reset_mark = tot_prec_np < previous_prec_np
+
+        tot_prec_comin_np[:] = np.where(reset_mark, tot_prec_np, tot_prec_np - previous_prec_np)
 
         # Apply bounding box mask first (mask cells outside the box)
         if use_bounding_box and bbox_mask is not None:
@@ -187,16 +192,6 @@ def get_total_prec():
             tas_prec_np[:] = to_numpy(tas_var)[:]
             tas_prec_np[np.isnan(tot_prec_comin_np)] = np.nan
 
-
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_AFTER)
-def prev_prec_callback():
-    """Store the total precipitation from previous step."""
-    current_time = comin.current_get_datetime()
-    current_datetime = datetime.fromisoformat(current_time)
-    seconds = current_datetime.minute * 60 + current_datetime.second
-
-    if seconds % accumulation_interval == 0:
-        tot_prec_np = to_masked(tot_prec, ctx.mask_2d)
         previous_prec_np = to_numpy(previous_prec)
         previous_prec_np[:] = tot_prec_np
 
