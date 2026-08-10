@@ -4,13 +4,13 @@ comin_plugin:
   physics: NWP
   parameters:
     interval: 300         # Accumulation window [seconds]
-    floor: 1.0e-4         # Precipitation threshold [kg/m2]; values at or below are masked
+    floor: 1.0e-3         # Precipitation threshold [kg/m2]; values at or below are masked
     floor_to_zero: false  # If true, masked values are set to 0.0 instead of NaN
     no_land_mask: false   # If true, ocean cells are kept (land masking disabled)
     no_temperature: false # If true, near-surface temperature at precip locations is not stored
     # Bounding box [degrees]. All four corners must be specified together, or all omitted.
     # Setting lon_min > lon_max means the box crosses the date line.
-    lon_min: ~
-    lon_max: ~
-    lat_min: ~
-    lat_max: ~
+    lon_min: 5.15
+    lon_max: 16.30
+    lat_min: 47.20
+    lat_max: 56.00
